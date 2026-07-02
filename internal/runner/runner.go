@@ -121,4 +121,5 @@ func finalize(doc *model.Document, start time.Time, sensitiveMode model.Sensitiv
 	if doc.Findings == nil {
 		doc.Findings = []model.Finding{}
 	}
+	findings.SortBySeverity(doc.Findings)
 }

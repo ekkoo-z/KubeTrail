@@ -29,25 +29,9 @@ func Render(w io.Writer, results []Finding, color bool, outputPath string) {
 		return
 	}
 
-	lpeFindings := filterCategory(results, "lpe")
-	escapeFindings := filterCategory(results, "escape")
-	rbacFindings := filterCategory(results, "rbac")
-
-	if len(lpeFindings) > 0 {
-		renderSection(w, "Linux Local Privilege Escalation Risk", lpeFindings, color)
-	}
-	if len(escapeFindings) > 0 {
-		if len(lpeFindings) > 0 {
-			fmt.Fprintln(w)
-		}
-		renderSection(w, "Container Escape Risk", escapeFindings, color)
-	}
-	if len(rbacFindings) > 0 {
-		if len(lpeFindings) > 0 || len(escapeFindings) > 0 {
-			fmt.Fprintln(w)
-		}
-		renderSection(w, "RBAC Lateral Movement Risk", rbacFindings, color)
-	}
+	sorted := append([]Finding(nil), results...)
+	SortBySeverity(sorted)
+	renderSection(w, "Attack Surface Risk Findings", sorted, color)
 
 	fmt.Fprintln(w)
 	renderSummary(w, results, color)
@@ -65,10 +49,11 @@ func renderSection(w io.Writer, title string, results []Finding, color bool) {
 		fmt.Fprintln(w, header)
 	}
 
-	fmt.Fprintf(w, " %-8s │ %-9s │ %-36s │ %s\n", "SEVERITY", "CONF", "FINDING", "EVIDENCE")
-	fmt.Fprintf(w, "%s┼%s┼%s┼%s\n",
+	fmt.Fprintf(w, " %-8s │ %-9s │ %-8s │ %-36s │ %s\n", "SEVERITY", "CONF", "CATEGORY", "FINDING", "EVIDENCE")
+	fmt.Fprintf(w, "%s┼%s┼%s┼%s┼%s\n",
 		strings.Repeat("─", 10),
 		strings.Repeat("─", 11),
+		strings.Repeat("─", 10),
 		strings.Repeat("─", 38),
 		strings.Repeat("─", 30))
 
@@ -81,9 +66,10 @@ func renderSection(w io.Writer, title string, results []Finding, color bool) {
 		if confidence == "" {
 			confidence = "-"
 		}
+		category := truncate(f.Category, 8)
 		title := truncate(f.Title, 36)
 		evidence := truncate(f.Evidence, 28)
-		fmt.Fprintf(w, " %-8s │ %-9s │ %-36s │ %s\n", sev, confidence, title, evidence)
+		fmt.Fprintf(w, " %-8s │ %-9s │ %-8s │ %-36s │ %s\n", sev, confidence, category, title, evidence)
 	}
 }
 
@@ -121,16 +107,6 @@ func severityColor(severity string) string {
 	default:
 		return ""
 	}
-}
-
-func filterCategory(results []Finding, category string) []Finding {
-	var out []Finding
-	for _, f := range results {
-		if f.Category == category {
-			out = append(out, f)
-		}
-	}
-	return out
 }
 
 func truncate(s string, maxLen int) string {

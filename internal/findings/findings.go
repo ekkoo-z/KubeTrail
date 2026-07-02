@@ -26,6 +26,7 @@ func Evaluate(doc model.Document, scans []string) []Finding {
 	if runRBAC {
 		results = append(results, EvaluateRBAC(doc)...)
 	}
+	SortBySeverity(results)
 	return results
 }
 

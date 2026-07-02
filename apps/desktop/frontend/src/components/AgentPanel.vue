@@ -48,10 +48,11 @@ const activeScanResult = computed(() => {
 })
 const activeScanAnalysisKey = computed(() => scanAnalysisKey(activeScanResult.value))
 const isReady = computed(() => agentStore.status.ready)
+const agentBusy = computed(() => agentStore.streaming || aiAnalysisLoading.value)
 const historySessions = computed(() => agentStore.sessions)
 const runtimeLabel = computed(() => {
   if (agentStore.model) return agentStore.model
-  if (agentStore.streaming) return '启动中'
+  if (agentBusy.value) return '启动中'
   return ''
 })
 const registeredExpTemplateIds = new Set([
@@ -238,7 +239,7 @@ async function loadSkills() {
 }
 
 async function selectSkill(name: string) {
-  if (!name || agentStore.streaming) return
+  if (!name || agentBusy.value) return
   try {
     const skill = await api.GetAgentSkill(name) as AgentSkill
     selectedSkillName.value = skill.name
@@ -250,7 +251,7 @@ async function selectSkill(name: string) {
 }
 
 function startNewSkill() {
-  if (agentStore.streaming) return
+  if (agentBusy.value) return
   selectedSkillName.value = ''
   skillContent.value = '# New KubeTrail Skill\n\n## Purpose\n\nDescribe the analysis boundary for this skill.\n\n## Evidence\n\n- Positive evidence:\n- Negative evidence:\n\n## Output\n\nReturn evidence-bound conclusions only.\n'
   newSkillName.value = ''
@@ -261,6 +262,7 @@ function startNewSkill() {
 }
 
 async function saveSkill() {
+  if (agentBusy.value) return
   const name = (selectedSkillName.value || newSkillName.value).trim()
   if (!name) {
     ;(window as any).ElMessage?.warning?.('请输入 Skill 名称')
@@ -287,7 +289,7 @@ async function saveSkill() {
 }
 
 async function deleteSkill(name: string) {
-  if (!name || agentStore.streaming) return
+  if (!name || agentBusy.value) return
   if (!window.confirm(`删除 Skill "${name}"？`)) return
   skillSaving.value = true
   try {
@@ -307,7 +309,7 @@ async function deleteSkill(name: string) {
 }
 
 function fillPrompt(prompt: string) {
-  if (agentStore.streaming) return
+  if (agentBusy.value) return
   inputMsg.value = prompt
   nextTick(() => inputRef.value?.focus())
 }
@@ -315,6 +317,10 @@ function fillPrompt(prompt: string) {
 async function sendMessage() {
   const msg = inputMsg.value.trim()
   if (!msg || agentStore.streaming) return
+  if (aiAnalysisLoading.value) {
+    ;(window as any).ElMessage?.warning?.('一键智能分析正在运行，请中断或等待完成后再继续对话')
+    return
+  }
 
   inputMsg.value = ''
   pendingPrompt.value = msg
@@ -406,7 +412,7 @@ async function sendMessage() {
 
   try {
     const resumeSessionId = await resumeSessionIdForCurrentProvider()
-    await api.StartAgentChat(scanStore.activeResultId || '', msg, sid, resumeSessionId)
+    await api.StartAgentChat(scanStore.activeResultId || '', buildChatMessageForAgent(msg), sid, resumeSessionId)
     const activeScan = scanStore.results.find(r => r.id === scanStore.activeResultId)
     if (activeScan?.sourcePath) {
       agentStore.setScanSourcePath(activeScan.sourcePath)
@@ -417,6 +423,30 @@ async function sendMessage() {
     agentStore.addMessage({ role: 'system', content: `Error: ${e}`, timestamp: Date.now() })
     cleanupChatListeners()
   }
+}
+
+function buildChatMessageForAgent(message: string): string {
+  const cached = agentStore.getSurfaceAnalysis(activeScanAnalysisKey.value)
+  const findings = Array.isArray(cached?.findings) ? cached.findings : []
+  if (!findings.length) return message
+  const context = findings.slice(0, 12).map((finding: any) => ({
+    id: finding?.id,
+    title: finding?.title,
+    category: finding?.category,
+    severity: finding?.severity,
+    confidence: finding?.confidence,
+    description: finding?.description,
+    evidence: Array.isArray(finding?.evidence) ? finding.evidence : [],
+    nextSteps: Array.isArray(finding?.nextSteps) ? finding.nextSteps : [],
+  }))
+  return [
+    '以下是此前“一键智能分析攻击面”的缓存结果，仅作为本轮对话上下文。',
+    '不要重新执行一键全量攻击面分析，不要覆盖攻击面列表，也不要输出新的结构化 findings JSON，除非用户明确要求重新研判。',
+    '可以按需基于扫描证据继续解释、深入某个 finding、补充验证计划或查询具体 fact。',
+    JSON.stringify({ status: cached?.status || '', findings: context }, null, 2),
+    '',
+    `用户问题: ${message}`,
+  ].join('\n')
 }
 
 async function resumeSessionIdForCurrentProvider(): Promise<string> {
@@ -504,27 +534,23 @@ async function runAiSurfaceAnalysis() {
   }
 
   cleanupAiAnalysisListeners()
-  cleanupChatListeners()
   if (!agentStore.sessionId) agentStore.newSession()
   const visiblePrompt = '请基于当前扫描结果执行一键智能攻击面研判，并把 AI 确认的问题同步到攻击面列表。'
-  const sid = agentStore.sessionId
+  const sid = surfaceAnalysisSessionId()
   aiAnalysisLoading.value = true
   aiAnalysisStatus.value = 'Agent 启动中...'
-  aiFindings.value = []
-  clearCurrentAiSurfaceAnalysis()
   if (graphData.value) setGraphData(graphData.value)
   aiAnalysisSessionId = sid
   aiAnalysisStopRequested = false
-  pendingPrompt.value = visiblePrompt
   agentStore.clearRuntimeInfo()
   agentStore.addMessage({ role: 'user', content: visiblePrompt, timestamp: Date.now() })
   agentStore.addMessage({ role: 'assistant', content: '正在启动 AI 攻击面研判...', timestamp: Date.now() })
-  agentStore.streaming = true
   const activeScan = scanStore.results.find(r => r.id === scanStore.activeResultId)
   if (activeScan?.sourcePath) agentStore.setScanSourcePath(activeScan.sourcePath)
   subTab.value = 'chat'
   scrollToBottom()
   let finished = false
+  let structuredResultReceived = false
 
   const finish = (ok: boolean, message?: string) => {
     if (finished) return
@@ -532,8 +558,6 @@ async function runAiSurfaceAnalysis() {
     aiAnalysisLoading.value = false
     aiAnalysisSessionId = ''
     aiAnalysisStopRequested = false
-    agentStore.streaming = false
-    pendingPrompt.value = ''
     cleanupAiAnalysisListeners()
     if (ok) {
       aiAnalysisStatus.value = message || `AI 已识别 ${aiFindings.value.length} 个攻击面`
@@ -548,9 +572,6 @@ async function runAiSurfaceAnalysis() {
   addAiAnalysisUnsub(on(`agent:${sid}:message`, (line: string) => {
     try {
       const event = JSON.parse(line)
-      if (event.sessionId) {
-        agentStore.setClaudeSessionId(event.sessionId)
-      }
       if (event.type === 'init') {
         agentStore.setRuntimeInfo({
           provider: typeof event.provider === 'string' ? event.provider : '',
@@ -581,6 +602,7 @@ async function runAiSurfaceAnalysis() {
         try {
           const rawText = String(event.text || '')
           const findings = parseAiSurfaceFindings(rawText)
+          structuredResultReceived = true
           applyAiSurfaceFindings(findings)
           updateAiAnalysisChat(formatAiSurfaceChatResult(rawText, findings))
           scrollToBottom()
@@ -610,17 +632,24 @@ async function runAiSurfaceAnalysis() {
       finish(false, 'AI 分析已中断')
       return
     }
-    finish(true, aiFindings.value.length ? `AI 已识别 ${aiFindings.value.length} 个攻击面` : 'AI 分析结束，但未返回结构化结果')
+    if (!structuredResultReceived) {
+      finish(false, 'AI 分析结束，但未返回结构化结果')
+      return
+    }
+    finish(true, aiFindings.value.length ? `AI 已识别 ${aiFindings.value.length} 个攻击面` : 'AI 未返回新的可解析攻击面')
   }))
 
   try {
     aiAnalysisStatus.value = 'Agent 分析中...'
-    const resumeSessionId = await resumeSessionIdForCurrentProvider()
-    await api.StartAgentChat(scanStore.activeResultId, buildAiSurfacePrompt(), sid, resumeSessionId)
+    await api.StartAgentChat(scanStore.activeResultId, buildAiSurfacePrompt(), sid, '')
   } catch (e: any) {
     updateAiAnalysisChatError(String(e?.message || e))
     finish(false, String(e?.message || e))
   }
+}
+
+function surfaceAnalysisSessionId(): string {
+  return `surface-analysis-${stableSurfaceId(activeScanAnalysisKey.value)}`
 }
 
 function updateAiAnalysisChat(content: string) {
@@ -712,14 +741,12 @@ function restoreAiSurfaceFindings() {
 
 function persistCurrentAiSurfaceAnalysis(status = '') {
   const key = activeScanAnalysisKey.value
-  if (!key || !aiFindings.value.length) return
-  agentStore.setSurfaceAnalysis(key, aiFindings.value, status)
-}
-
-function clearCurrentAiSurfaceAnalysis() {
-  const key = activeScanAnalysisKey.value
   if (!key) return
-  agentStore.clearSurfaceAnalysis(key)
+  if (aiFindings.value.length) {
+    agentStore.setSurfaceAnalysis(key, aiFindings.value, status)
+  } else {
+    agentStore.clearSurfaceAnalysis(key)
+  }
 }
 
 function mergeGraphWithAiFindings(data: any): any {
@@ -746,13 +773,13 @@ async function exportReport(format: 'json' | 'markdown') {
 }
 
 function newSession() {
-  if (agentStore.streaming) return
+  if (agentBusy.value) return
   cleanupChatListeners()
   agentStore.newSession()
 }
 
 function selectHistorySession(id: string) {
-  if (agentStore.streaming || id === agentStore.sessionId) return
+  if (agentBusy.value || id === agentStore.sessionId) return
   cleanupChatListeners()
   agentStore.selectSession(id)
   restoreSessionScan()
@@ -777,7 +804,7 @@ async function restoreSessionScan() {
 }
 
 function deleteHistorySession(id: string) {
-  if (agentStore.streaming) return
+  if (agentBusy.value) return
   cleanupChatListeners()
   if (editingSessionId.value === id) cancelRename()
   agentStore.deleteSession(id)
@@ -786,7 +813,7 @@ function deleteHistorySession(id: string) {
 }
 
 function beginRename(id: string, title: string) {
-  if (agentStore.streaming) return
+  if (agentBusy.value) return
   editingSessionId.value = id
   editingTitle.value = title
   nextTick(() => {
@@ -1312,8 +1339,6 @@ watch(() => scanStore.activeResultId, (newId) => {
     aiAnalysisSessionId = ''
     aiAnalysisLoading.value = false
     aiAnalysisStopRequested = false
-    agentStore.streaming = false
-    pendingPrompt.value = ''
   }
   agentStore.setGraph(null)
   restoreAiSurfaceFindings()
@@ -1368,7 +1393,7 @@ function handleCompositionEnd() {
         type="primary"
         plain
         :loading="aiAnalysisLoading"
-        :disabled="agentStore.streaming"
+        :disabled="agentBusy"
         @click="openAiSurfaceAnalysis"
       >一键智能分析攻击面</el-button>
     </div>
@@ -1387,7 +1412,7 @@ function handleCompositionEnd() {
         <aside class="chat-history">
           <div class="history-head">
             <span>历史对话</span>
-            <el-button size="small" text @click="newSession" :disabled="agentStore.streaming" title="新会话">
+            <el-button size="small" text @click="newSession" :disabled="agentBusy" title="新会话">
               <el-icon><Plus /></el-icon>
             </el-button>
           </div>
@@ -1396,7 +1421,7 @@ function handleCompositionEnd() {
               v-for="session in historySessions"
               :key="session.id"
               class="history-item"
-              :class="{ active: session.id === agentStore.sessionId, disabled: agentStore.streaming }"
+              :class="{ active: session.id === agentStore.sessionId, disabled: agentBusy }"
               role="button"
               tabindex="0"
               @click="selectHistorySession(session.id)"
@@ -1424,7 +1449,7 @@ function handleCompositionEnd() {
                     type="button"
                     class="history-action history-delete"
                     title="删除"
-                    :disabled="agentStore.streaming"
+                    :disabled="agentBusy"
                     @click.stop="deleteHistorySession(session.id)"
                   >×</button>
                 </span>
@@ -1439,9 +1464,9 @@ function handleCompositionEnd() {
         </aside>
 
         <section class="chat-main">
-          <div v-if="agentStore.streaming || agentStore.loadedSkills.length" class="agent-runtime">
-            <span class="runtime-state" :class="{ active: agentStore.streaming }">
-              {{ agentStore.streaming ? '运行中' : '最近运行' }}
+          <div v-if="agentBusy || agentStore.loadedSkills.length" class="agent-runtime">
+            <span class="runtime-state" :class="{ active: agentBusy }">
+              {{ aiAnalysisLoading ? '分析中' : agentStore.streaming ? '运行中' : '最近运行' }}
             </span>
             <span v-if="runtimeLabel" class="runtime-model">{{ runtimeLabel }}</span>
             <div class="runtime-skills" :class="{ empty: !agentStore.loadedSkills.length }">
@@ -1481,7 +1506,7 @@ function handleCompositionEnd() {
               <div class="msg-role">{{ msg.role === 'user' ? '你' : msg.role === 'assistant' ? 'Agent' : '系统' }}</div>
               <div class="msg-content" v-html="renderContent(msg.content)"></div>
             </div>
-            <div v-if="agentStore.streaming" class="typing-indicator">
+            <div v-if="agentBusy" class="typing-indicator">
               <span></span><span></span><span></span>
             </div>
           </div>
@@ -1492,7 +1517,7 @@ function handleCompositionEnd() {
               v-model="inputMsg"
               class="chat-input"
               :placeholder="'输入消息... (Enter 发送, Shift+Enter 换行)'"
-              :disabled="agentStore.streaming"
+              :disabled="agentBusy"
               @keydown="handleKeydown"
               @compositionstart="handleCompositionStart"
               @compositionend="handleCompositionEnd"
@@ -1500,6 +1525,9 @@ function handleCompositionEnd() {
             ></textarea>
             <el-button v-if="agentStore.streaming" class="chat-action-btn is-stop" type="warning" plain :loading="stoppingChat" @click="stopAndEditMessage">
               中断并编辑
+            </el-button>
+            <el-button v-else-if="aiAnalysisLoading" class="chat-action-btn is-stop" type="warning" plain @click="stopAiSurfaceAnalysis">
+              中断分析
             </el-button>
             <el-button v-else class="chat-action-btn is-send" type="primary" :disabled="!inputMsg.trim()" @click="sendMessage">
               发送
@@ -1527,7 +1555,7 @@ function handleCompositionEnd() {
         <aside class="skills-rail">
           <div class="skills-head">
             <span>Agent Skills</span>
-            <el-button size="small" text :disabled="agentStore.streaming" @click="startNewSkill">新增</el-button>
+            <el-button size="small" text :disabled="agentBusy" @click="startNewSkill">新增</el-button>
           </div>
           <div v-if="skillsLoading" class="skills-empty">加载中...</div>
           <div v-else-if="!skillList.length" class="skills-empty">暂无 Skills</div>
@@ -1538,7 +1566,7 @@ function handleCompositionEnd() {
               type="button"
               class="skill-row"
               :class="{ active: selectedSkillName === skill.name }"
-              :disabled="agentStore.streaming"
+              :disabled="agentBusy"
               @click="selectSkill(skill.name)"
             >
               <span class="skill-row__name">{{ skill.name }}</span>
@@ -1553,16 +1581,16 @@ function handleCompositionEnd() {
               class="skill-name-input"
               :readonly="!!selectedSkillName"
               :placeholder="selectedSkillName || 'skill-name'"
-              :disabled="agentStore.streaming || skillSaving"
+              :disabled="agentBusy || skillSaving"
             />
             <span v-if="selectedSkillName" class="skill-path">.claude/skills/{{ selectedSkillName }}/SKILL.md</span>
             <span v-else class="skill-path">.claude/skills/&lt;name&gt;/SKILL.md</span>
-            <el-button size="small" type="primary" :loading="skillSaving" :disabled="agentStore.streaming || !skillContent.trim()" @click="saveSkill">保存</el-button>
+            <el-button size="small" type="primary" :loading="skillSaving" :disabled="agentBusy || !skillContent.trim()" @click="saveSkill">保存</el-button>
             <el-button
               size="small"
               type="danger"
               plain
-              :disabled="agentStore.streaming || !selectedSkillName"
+              :disabled="agentBusy || !selectedSkillName"
               @click="deleteSkill(selectedSkillName)"
             >删除</el-button>
           </div>
@@ -1570,10 +1598,10 @@ function handleCompositionEnd() {
             v-model="skillContent"
             class="skill-content"
             spellcheck="false"
-            :disabled="agentStore.streaming || skillSaving"
+            :disabled="agentBusy || skillSaving"
             placeholder="# Skill Name"
           ></textarea>
-          <div v-if="agentStore.streaming" class="skill-lock">Agent 运行中，当前不可编辑 Skills</div>
+          <div v-if="agentBusy" class="skill-lock">Agent 运行中，当前不可编辑 Skills</div>
         </section>
       </div>
     </template>
@@ -1591,7 +1619,7 @@ function handleCompositionEnd() {
             <el-button
               type="primary"
               :loading="aiAnalysisLoading"
-              :disabled="!hasActiveScan || graphLoading || agentStore.streaming"
+              :disabled="!hasActiveScan || graphLoading || agentBusy"
               @click="runAiSurfaceAnalysis"
             >一键智能分析攻击面</el-button>
           </div>
@@ -1610,7 +1638,7 @@ function handleCompositionEnd() {
               type="primary"
               plain
               :loading="aiAnalysisLoading"
-              :disabled="agentStore.streaming"
+              :disabled="agentBusy"
               @click="runAiSurfaceAnalysis"
             >一键智能分析</el-button>
             <el-button

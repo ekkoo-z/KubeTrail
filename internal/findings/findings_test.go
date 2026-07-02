@@ -267,19 +267,43 @@ func TestRenderWithFindings(t *testing.T) {
 	}
 	Render(&buf, results, false, "dbus.json")
 	out := buf.String()
-	if !strings.Contains(out, "Linux Local Privilege Escalation Risk") {
-		t.Fatal("missing lpe section header")
+	if !strings.Contains(out, "Attack Surface Risk Findings") {
+		t.Fatal("missing global findings header")
 	}
-	if !strings.Contains(out, "Container Escape Risk") {
-		t.Fatal("missing escape section header")
+	if !strings.Contains(out, "CATEGORY") {
+		t.Fatal("missing category column")
 	}
-	if !strings.Contains(out, "RBAC Lateral Movement Risk") {
-		t.Fatal("missing RBAC section header")
+	criticalIndex := strings.Index(out, "CAP_SYS_ADMIN")
+	highIndex := strings.Index(out, "secrets readable")
+	mediumIndex := strings.Index(out, "Dirty Pipe")
+	if criticalIndex < 0 || highIndex < 0 || mediumIndex < 0 {
+		t.Fatalf("missing expected findings in output: %s", out)
+	}
+	if !(criticalIndex < highIndex && highIndex < mediumIndex) {
+		t.Fatalf("findings were not globally sorted by severity: %s", out)
 	}
 	if !strings.Contains(out, "1 critical") {
 		t.Fatal("missing summary count")
 	}
 	if !strings.Contains(out, "1 medium") {
 		t.Fatal("missing medium summary count")
+	}
+}
+
+func TestSortBySeverityStable(t *testing.T) {
+	results := []Finding{
+		{Severity: "medium", Title: "medium-a"},
+		{Severity: "critical", Title: "critical-a"},
+		{Severity: "high", Title: "high-a"},
+		{Severity: "critical", Title: "critical-b"},
+	}
+
+	SortBySeverity(results)
+
+	want := []string{"critical-a", "critical-b", "high-a", "medium-a"}
+	for i, title := range want {
+		if results[i].Title != title {
+			t.Fatalf("index %d: got %q, want %q; all=%#v", i, results[i].Title, title, results)
+		}
 	}
 }
