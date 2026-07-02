@@ -270,8 +270,8 @@ export function SaveKubeconfigFile(arg1) {
   return window['go']['main']['App']['SaveKubeconfigFile'](arg1);
 }
 
-export function StartAgentChat(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['StartAgentChat'](arg1, arg2, arg3, arg4);
+export function StartAgentChat(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['StartAgentChat'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function StartClusterScan(arg1, arg2) {

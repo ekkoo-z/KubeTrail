@@ -46,8 +46,6 @@ onMounted(async () => {
     const cfg = await api.GetAgentDisplayConfig()
     if (cfg) {
       provider.value = ((cfg as any).provider === 'codex' ? 'codex' : 'claude')
-      language.value = ((cfg as any).language === 'en-US' ? 'en-US' : 'zh-CN')
-      setLocale(language.value)
       apiKey.value = (cfg as any).apiKey || ''
       baseUrl.value = (cfg as any).baseUrl || ''
       model.value = (cfg as any).model || ''
@@ -71,7 +69,6 @@ watch(language, (value) => {
 function buildConfig(): any {
   return {
     provider: provider.value,
-    language: language.value,
     apiKey: apiKey.value,
     baseUrl: baseUrl.value,
     model: model.value,
@@ -343,18 +340,6 @@ async function refreshLogs() {
                 @change="onProviderChange"
               />
             </el-form-item>
-            <el-form-item :label="t('语言')">
-              <div class="field-stack">
-                <el-segmented
-                  v-model="language"
-                  :options="[
-                    { label: t('中文'), value: 'zh-CN' },
-                    { label: t('英文'), value: 'en-US' },
-                  ]"
-                />
-                <div class="field-hint">{{ t('使用英文界面，并让 Agent 默认输出英文') }}</div>
-              </div>
-            </el-form-item>
             <el-form-item label="API Key">
               <div class="field-stack">
                 <el-input v-model="apiKey" type="password" show-password :placeholder="provider === 'codex' ? 'sk-...' : 'sk-ant-...'" style="max-width:400px" />
@@ -416,6 +401,26 @@ async function refreshLogs() {
               <span style="font-size:11px;color:var(--kg-text-muted);margin-left:8px">
                 启用后 Agent 可解密显示 sensitive:// 引用的原始值
               </span>
+            </el-form-item>
+          </el-form>
+        </div>
+      </el-tab-pane>
+
+      <el-tab-pane :label="t('界面语言')" name="language">
+        <div class="tab-body">
+          <el-form label-width="160px" size="default">
+            <el-form-item :label="t('语言')">
+              <div class="field-stack">
+                <el-segmented
+                  v-model="language"
+                  :options="[
+                    { label: t('中文'), value: 'zh-CN' },
+                    { label: t('英文'), value: 'en-US' },
+                  ]"
+                />
+                <div class="field-hint">{{ t('语言偏好会立即生效，并保存在当前浏览器本地。') }}</div>
+                <div class="field-hint">{{ t('使用英文界面，并让 Agent 默认输出英文') }}</div>
+              </div>
             </el-form-item>
           </el-form>
         </div>
@@ -549,7 +554,7 @@ async function refreshLogs() {
       </el-tab-pane>
     </el-tabs>
 
-    <div class="save-bar">
+    <div v-if="activeTab === 'agent' || activeTab === 'mcp'" class="save-bar">
       <el-button type="primary" @click="save" :loading="saving">保存并应用</el-button>
       <el-button @click="testConnection" :loading="testing">测试连接</el-button>
       <span v-if="testResult" :style="{ fontSize: '12px', color: testResult.ok ? 'var(--kg-accent)' : 'var(--kg-warn)' }">

@@ -141,7 +141,7 @@ export function SaveCluster(arg1:main.ClusterDTO):Promise<string>;
 
 export function SaveKubeconfigFile(arg1:kube.KubeconfigResult):Promise<void>;
 
-export function StartAgentChat(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
+export function StartAgentChat(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<void>;
 
 export function StartClusterScan(arg1:string,arg2:scanner.ScanOptions):Promise<string>;
 

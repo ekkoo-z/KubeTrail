@@ -472,7 +472,7 @@ async function sendMessage() {
 
   try {
     const resumeSessionId = await resumeSessionIdForCurrentProvider()
-    await api.StartAgentChat(scanStore.activeResultId || '', buildChatMessageForAgent(msg), sid, resumeSessionId)
+    await api.StartAgentChat(scanStore.activeResultId || '', buildChatMessageForAgent(msg), sid, resumeSessionId, currentLocale.value)
     const activeScan = scanStore.results.find(r => r.id === scanStore.activeResultId)
     if (activeScan?.sourcePath) {
       agentStore.setScanSourcePath(activeScan.sourcePath)
@@ -727,7 +727,7 @@ async function runAiSurfaceAnalysis() {
 
   try {
     aiAnalysisStatus.value = currentLocale.value === 'en-US' ? 'Agent analyzing...' : 'Agent 分析中...'
-    await api.StartAgentChat(scanStore.activeResultId, buildAiSurfacePrompt(), sid, '')
+    await api.StartAgentChat(scanStore.activeResultId, buildAiSurfacePrompt(), sid, '', currentLocale.value)
   } catch (e: any) {
     updateAiAnalysisChatError(String(e?.message || e))
     finish(false, String(e?.message || e))

@@ -6,7 +6,9 @@ export type Locale = 'zh-CN' | 'en-US'
 const localeKey = 'kubetrail.locale'
 const currentLocaleRef = ref<Locale>(normalizeLocale(localStorage.getItem(localeKey) || 'zh-CN'))
 const textOriginals = new WeakMap<Text, string>()
+const textRenderedValues = new WeakMap<Text, string>()
 const attrOriginals = new WeakMap<Element, Map<string, string>>()
+const attrRenderedValues = new WeakMap<Element, Map<string, string>>()
 let observer: MutationObserver | null = null
 let rootNode: ParentNode | null = null
 
@@ -153,11 +155,17 @@ function translateTextNode(node: Text): void {
   if (!parent || shouldSkipElement(parent)) {
     return
   }
-  if (!textOriginals.has(node) || containsChinese(node.data)) {
+  const previousOriginal = textOriginals.get(node)
+  const renderedValue = textRenderedValues.get(node)
+  if (shouldCaptureOriginal(node.data, previousOriginal, renderedValue)) {
     textOriginals.set(node, node.data)
   }
-  const original = textOriginals.get(node) ?? node.data
+  const original = textOriginals.get(node)
+  if (!original) {
+    return
+  }
   const desired = currentLocaleRef.value === 'en-US' ? translateText(original) : original
+  textRenderedValues.set(node, desired)
   if (node.data !== desired) {
     node.data = desired
   }
@@ -177,15 +185,42 @@ function translateElementAttributes(element: Element): void {
       originals = new Map()
       attrOriginals.set(element, originals)
     }
-    if (!originals.has(name) || containsChinese(value)) {
+    let renderedValues = attrRenderedValues.get(element)
+    if (!renderedValues) {
+      renderedValues = new Map()
+      attrRenderedValues.set(element, renderedValues)
+    }
+    const previousOriginal = originals.get(name)
+    const renderedValue = renderedValues.get(name)
+    if (shouldCaptureOriginal(value, previousOriginal, renderedValue)) {
       originals.set(name, value)
     }
-    const original = originals.get(name) ?? value
+    const original = originals.get(name)
+    if (!original) {
+      continue
+    }
     const desired = currentLocaleRef.value === 'en-US' ? translateText(original) : original
+    renderedValues.set(name, desired)
     if (value !== desired) {
       element.setAttribute(name, desired)
     }
   }
+}
+
+function shouldCaptureOriginal(value: string, previousOriginal?: string, renderedValue?: string): boolean {
+  if (!containsChinese(value)) {
+    return false
+  }
+  if (!previousOriginal) {
+    return true
+  }
+  if (value === previousOriginal || value === renderedValue) {
+    return false
+  }
+  if (currentLocaleRef.value === 'zh-CN') {
+    return true
+  }
+  return value !== translateText(previousOriginal)
 }
 
 function shouldSkipElement(element: Element): boolean {

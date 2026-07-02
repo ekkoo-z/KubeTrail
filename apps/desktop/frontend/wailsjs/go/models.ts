@@ -30,7 +30,6 @@ export namespace agentmgr {
 	}
 	export class AgentConfig {
 	    provider?: string;
-	    language?: string;
 	    apiKey: string;
 	    baseUrl?: string;
 	    model?: string;
@@ -48,7 +47,6 @@ export namespace agentmgr {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.provider = source["provider"];
-	        this.language = source["language"];
 	        this.apiKey = source["apiKey"];
 	        this.baseUrl = source["baseUrl"];
 	        this.model = source["model"];

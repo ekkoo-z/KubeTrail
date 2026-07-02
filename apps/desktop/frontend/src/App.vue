@@ -2,18 +2,10 @@
 import { onMounted } from 'vue'
 import { useClusterStore } from './stores/cluster'
 import ClusterSidebar from './components/ClusterSidebar.vue'
-import { api } from './api/wails'
-import { setLocale } from './i18n'
 
 const cs = useClusterStore()
-onMounted(async () => {
+onMounted(() => {
   cs.refresh()
-  try {
-    const cfg = await api.GetAgentDisplayConfig()
-    if ((cfg as any)?.language) {
-      setLocale((cfg as any).language)
-    }
-  } catch {}
 })
 </script>
 

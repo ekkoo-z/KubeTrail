@@ -54,6 +54,7 @@ async function handleRequest(req: Request): Promise<void> {
             resumeSession: req.params?.sessionId as string,
             forkSession: req.params?.forkSession === true,
             skills: Array.isArray(req.params?.skills) ? req.params.skills.map(String) : undefined,
+            config: { language: normalizePipeLanguage(req.params?.language) },
             abortController,
             onEvent: (event) => {
               if (event.type !== "result") {
@@ -110,6 +111,17 @@ async function handleRequest(req: Request): Promise<void> {
     send({ id: req.id, type: "error", error: err instanceof Error ? err.message : String(err) });
   }
   send({ id: req.id, type: "end" });
+}
+
+function normalizePipeLanguage(value: unknown): "zh-CN" | "en-US" | undefined {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (normalized === "en" || normalized === "en-us") {
+    return "en-US";
+  }
+  if (normalized === "zh" || normalized === "zh-cn") {
+    return "zh-CN";
+  }
+  return undefined;
 }
 
 export async function runPipe(): Promise<void> {

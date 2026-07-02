@@ -908,7 +908,7 @@ func (a *App) DeleteAgentSkill(name string) error {
 	return nil
 }
 
-func (a *App) StartAgentChat(scanID, message, uiSessionID, resumeSessionID string) error {
+func (a *App) StartAgentChat(scanID, message, uiSessionID, resumeSessionID, language string) error {
 	if err := a.ensureAgentRunning(true); err != nil {
 		return err
 	}
@@ -932,7 +932,7 @@ func (a *App) StartAgentChat(scanID, message, uiSessionID, resumeSessionID strin
 			cancel()
 			a.chatCancels.Delete(uiSessionID)
 		}()
-		ch, err := a.agentMgr.ChatWithRequestID(ctx, inputPath, message, resumeSessionID, requestID)
+		ch, err := a.agentMgr.ChatWithRequestIDLanguage(ctx, inputPath, message, resumeSessionID, requestID, language)
 		if err != nil {
 			wruntime.EventsEmit(a.ctx, eventName("agent", uiSessionID, "error"), err.Error())
 			return
@@ -1401,7 +1401,24 @@ func (a *App) loadFullAgentConfig() agentmgr.AgentConfig {
 	}
 	var cfg agentmgr.AgentConfig
 	json.Unmarshal(data, &cfg)
+	a.migrateAgentConfig(data)
 	return cfg
+}
+
+func (a *App) migrateAgentConfig(data []byte) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return
+	}
+	if _, ok := raw["language"]; !ok {
+		return
+	}
+	delete(raw, "language")
+	cleaned, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(a.agentConfigPath(), cleaned, 0o600)
 }
 
 func (a *App) OpenExternalURL(url string) {
