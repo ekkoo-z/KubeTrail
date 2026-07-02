@@ -86,7 +86,7 @@ async function runKubeTrailClaudeAgent(config: AgentRuntimeConfig, params: RunAg
           });
         }
       }
-      const event = toEvent(message);
+      const event = toEvent(message, enabledSkills);
       if (event) {
         if (event.type === "assistant") {
           if (isDuplicateAssistantText(event.text, lastAssistantText)) {
@@ -253,14 +253,14 @@ function buildPrompt(message: string, inputPath: string, isResume: boolean, lang
   ].join("\n");
 }
 
-function toEvent(message: SDKMessage): AgentEvent | undefined {
+function toEvent(message: SDKMessage, enabledSkills: readonly string[] = []): AgentEvent | undefined {
   if (message.type === "system" && message.subtype === "init") {
     return {
       type: "init",
       sessionId: message.session_id,
       model: message.model,
       tools: message.tools,
-      skills: message.skills,
+      skills: enabledInitSkills(message.skills, enabledSkills),
       provider: "claude",
     };
   }
@@ -316,6 +316,15 @@ function toEvent(message: SDKMessage): AgentEvent | undefined {
     return { type: "system", subtype: "rate_limit", text: `rate limited: ${JSON.stringify(info)}` };
   }
   return undefined;
+}
+
+function enabledInitSkills(providerSkills: readonly string[] | undefined, enabledSkills: readonly string[]): string[] {
+  if (enabledSkills.length === 0) {
+    return [...(providerSkills ?? [])];
+  }
+  const enabledSet = new Set(enabledSkills);
+  const filtered = (providerSkills ?? []).filter((skill) => enabledSet.has(skill));
+  return filtered.length > 0 ? filtered : [...enabledSkills];
 }
 
 async function runKubeTrailCodexAgent(config: AgentRuntimeConfig, params: RunAgentParams, enabledSkills: readonly string[]): Promise<RunAgentResult> {
