@@ -35,7 +35,8 @@ async function main(): Promise<void> {
 }
 
 async function runChat(args: ParsedArgs): Promise<void> {
-  const message = stringFlag(args, "message") ?? (args.rest.join(" ") || "分析当前 KubeTrail 结果，列出危险点、证据和建议的验证方向。");
+  const config = loadConfig({ provider: providerFlag(args) });
+  const message = stringFlag(args, "message") ?? (args.rest.join(" ") || defaultChatMessage(config.language));
   const input = stringFlag(args, "input");
   const session = stringFlag(args, "session");
   const json = Boolean(args.flags.json);
@@ -45,7 +46,8 @@ async function runChat(args: ParsedArgs): Promise<void> {
     useDefaultInputPath: false,
     resumeSession: session,
     config: {
-      provider: providerFlag(args),
+      provider: config.provider,
+      language: config.language,
     },
     onEvent: (event) => {
       if (json) {
@@ -66,6 +68,12 @@ async function runChat(args: ParsedArgs): Promise<void> {
   if (json) {
     console.log(JSON.stringify({ type: "final", sessionId: result.sessionId, text: result.text }));
   }
+}
+
+function defaultChatMessage(language: "zh-CN" | "en-US"): string {
+  return language === "en-US"
+    ? "Analyze the current KubeTrail result and list the risks, evidence, and recommended verification directions."
+    : "分析当前 KubeTrail 结果，列出危险点、证据和建议的验证方向。";
 }
 
 

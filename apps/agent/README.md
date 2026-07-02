@@ -154,6 +154,8 @@ exp-generation
 
 The skill set is intentionally split by attack-surface boundary so that RBAC, local Pod escape, cloud identity, network reachability, admission policy, and EXP planning do not duplicate each other.
 
+Agent sessions do not load every skill by default. KubeTrail first enables the core attack-surface skills for RBAC, secret material, pod escape, kubelet/runtime/etcd bypass, and EXP planning, then adds specialized skills only when the user message explicitly names them or matches a narrow topic such as cloud metadata, ingress exposure, admission policy, CRDs/operators, Windows containers, or resource hijack. To force the complete set, ask for `all skills` / `全量 skills`.
+
 ## EXP Forge
 
 List templates:

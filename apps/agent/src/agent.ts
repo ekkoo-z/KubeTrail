@@ -13,6 +13,7 @@ import {
   type McpServerConfig,
 } from "./config.js";
 import { KubeTrailContextStore } from "./context.js";
+import { resolveEnabledSkillNames } from "./skills.js";
 import { createKubeTrailMcpServer, kubeTrailToolNames } from "./tools/kubetrail.js";
 
 export type AgentEvent =
@@ -30,6 +31,7 @@ export type RunAgentParams = {
   resumeSession?: string;
   forkSession?: boolean;
   useDefaultInputPath?: boolean;
+  skills?: string[];
   config?: AgentConfigOverrides;
   abortController?: AbortController;
   onEvent?: (event: AgentEvent) => void;
@@ -43,14 +45,15 @@ export type RunAgentResult = {
 
 export async function runKubeTrailAgent(params: RunAgentParams): Promise<RunAgentResult> {
   const config = loadConfig(params.config);
-  await ensureRuntimeDirs(config);
+  const enabledSkills = resolveEnabledSkillNames(params.message, params.skills);
+  await ensureRuntimeDirs(config, enabledSkills);
   if (config.provider === "codex") {
-    return runKubeTrailCodexAgent(config, params);
+    return runKubeTrailCodexAgent(config, params, enabledSkills);
   }
-  return runKubeTrailClaudeAgent(config, params);
+  return runKubeTrailClaudeAgent(config, params, enabledSkills);
 }
 
-async function runKubeTrailClaudeAgent(config: AgentRuntimeConfig, params: RunAgentParams): Promise<RunAgentResult> {
+async function runKubeTrailClaudeAgent(config: AgentRuntimeConfig, params: RunAgentParams, enabledSkills: readonly string[]): Promise<RunAgentResult> {
   const explicitInputPath = params.inputPath?.trim() ?? "";
   const inputPath = explicitInputPath || (params.useDefaultInputPath ? config.defaultInputPath : "");
   const store = new KubeTrailContextStore(inputPath);
@@ -59,8 +62,8 @@ async function runKubeTrailClaudeAgent(config: AgentRuntimeConfig, params: RunAg
     ...config.mcpServers,
   };
   const isResume = Boolean(params.resumeSession);
-  const prompt = buildPrompt(params.message, inputPath, isResume);
-  const options = buildOptions(config, mcpServers, params, inputPath);
+  const prompt = buildPrompt(params.message, inputPath, isResume, config.language);
+  const options = buildOptions(config, mcpServers, params, inputPath, enabledSkills);
 
   let sessionId: string | undefined;
   let result: SDKResultMessage | undefined;
@@ -116,7 +119,7 @@ async function runKubeTrailClaudeAgent(config: AgentRuntimeConfig, params: RunAg
   return { sessionId, text: resultText, result };
 }
 
-function buildOptions(config: AgentRuntimeConfig, mcpServers: Options["mcpServers"], params: RunAgentParams, inputPath: string): Options {
+function buildOptions(config: AgentRuntimeConfig, mcpServers: Options["mcpServers"], params: RunAgentParams, inputPath: string, enabledSkills: readonly string[]): Options {
   const canUseTool: CanUseTool = async (_toolName) => {
     return { behavior: "allow" };
   };
@@ -135,7 +138,7 @@ function buildOptions(config: AgentRuntimeConfig, mcpServers: Options["mcpServer
     canUseTool,
     permissionMode: "dontAsk",
     settingSources: ["project"],
-    skills: "all",
+    skills: [...enabledSkills],
     resume: params.resumeSession || undefined,
     forkSession: params.resumeSession && params.forkSession ? true : undefined,
     maxTurns: config.maxTurns,
@@ -198,33 +201,55 @@ function buildAllowedTools(mcpServers: Options["mcpServers"]): string[] {
   return [...allowed];
 }
 
-function buildPrompt(message: string, inputPath: string, isResume: boolean): string {
-  const responseRules = [
-    "全程使用简体中文回答，除非用户明确要求其他语言。",
-    "不要输出过程性自述、工具调用前自言自语或英文 filler，例如 `Let me read...`、`Now I have...`、`Let me generate...`。",
-    "只输出面向用户的结论、证据、攻击路径、下一步行动和必要的缺口说明。",
-  ];
+function buildPrompt(message: string, inputPath: string, isResume: boolean, language: AgentRuntimeConfig["language"]): string {
+  const english = language === "en-US";
+  const responseRules = english
+    ? [
+        "Answer in English throughout unless the user explicitly requests another language.",
+        "Do not output process narration, tool preambles, or filler such as `Let me read...`, `Now I have...`, or `Let me generate...`.",
+        "Only output user-facing conclusions, evidence, attack paths, next actions, and necessary gap statements.",
+      ]
+    : [
+        "全程使用简体中文回答，除非用户明确要求其他语言。",
+        "不要输出过程性自述、工具调用前自言自语或英文 filler，例如 `Let me read...`、`Now I have...`、`Let me generate...`。",
+        "只输出面向用户的结论、证据、攻击路径、下一步行动和必要的缺口说明。",
+      ];
+  const userQuestionLabel = english ? "User question" : "用户问题";
   if (isResume) {
-    return [...responseRules, "", `用户问题: ${message}`].join("\n");
+    return [...responseRules, "", `${userQuestionLabel}: ${message}`].join("\n");
   }
   if (!inputPath) {
-    return [
-      ...responseRules,
-      "当前没有加载 KubeTrail 扫描结果。",
-      "如果用户的问题可以通过当前上下文或其它已配置 MCP 工具回答，可以直接继续；不要为了非扫描任务主动调用 kubetrail_load_result。",
-      "不要声称已经观察到任何 factId、权限、Pod、Node、Namespace、云账号或 sensitiveRef；涉及目标环境结论时必须明确缺少当前扫描证据。",
-      "",
-      `用户问题: ${message}`,
-    ].join("\n");
+    const noInputRules = english
+      ? [
+          "No KubeTrail scan result is currently loaded.",
+          "If the user question can be answered from current context or other configured MCP tools, continue directly; do not proactively call kubetrail_load_result for non-scan tasks.",
+          "Do not claim that any factId, permission, Pod, Node, Namespace, cloud account, or sensitiveRef has been observed. For target-environment conclusions, explicitly state that current scan evidence is missing.",
+        ]
+      : [
+          "当前没有加载 KubeTrail 扫描结果。",
+          "如果用户的问题可以通过当前上下文或其它已配置 MCP 工具回答，可以直接继续；不要为了非扫描任务主动调用 kubetrail_load_result。",
+          "不要声称已经观察到任何 factId、权限、Pod、Node、Namespace、云账号或 sensitiveRef；涉及目标环境结论时必须明确缺少当前扫描证据。",
+        ];
+    return [...responseRules, ...noInputRules, "", `${userQuestionLabel}: ${message}`].join("\n");
   }
+  const inputRules = english
+    ? [
+        `First call kubetrail_load_result to load: ${inputPath}`,
+        "Then answer the user question based on the loaded evidence.",
+        "Do not invent factIds, permissions, Pods, Nodes, Namespaces, cloud accounts, or sensitiveRefs.",
+        "If exploit direction is needed, output only plans and template selections; do not execute side-effecting actions.",
+      ]
+    : [
+        `先调用 kubetrail_load_result 加载: ${inputPath}`,
+        "然后基于已加载证据回答用户问题。",
+        "不要编造 factId、权限、Pod、Node、Namespace、云账号或 sensitiveRef。",
+        "如果需要生成利用方向，只输出计划和模板选择，不执行有副作用动作。",
+      ];
   return [
     ...responseRules,
-    `先调用 kubetrail_load_result 加载: ${inputPath}`,
-    "然后基于已加载证据回答用户问题。",
-    "不要编造 factId、权限、Pod、Node、Namespace、云账号或 sensitiveRef。",
-    "如果需要生成利用方向，只输出计划和模板选择，不执行有副作用动作。",
+    ...inputRules,
     "",
-    `用户问题: ${message}`,
+    `${userQuestionLabel}: ${message}`,
   ].join("\n");
 }
 
@@ -293,11 +318,11 @@ function toEvent(message: SDKMessage): AgentEvent | undefined {
   return undefined;
 }
 
-async function runKubeTrailCodexAgent(config: AgentRuntimeConfig, params: RunAgentParams): Promise<RunAgentResult> {
+async function runKubeTrailCodexAgent(config: AgentRuntimeConfig, params: RunAgentParams, enabledSkills: readonly string[]): Promise<RunAgentResult> {
   const explicitInputPath = params.inputPath?.trim() ?? "";
   const inputPath = explicitInputPath || (params.useDefaultInputPath ? config.defaultInputPath : "");
-  const prompt = buildPrompt(params.message, inputPath, Boolean(params.resumeSession));
-  const skills = await listSkillNamesForProvider(config);
+  const prompt = buildPrompt(params.message, inputPath, Boolean(params.resumeSession), config.language);
+  const skills = (await listSkillNamesForProvider(config)).filter((name) => enabledSkills.includes(name));
   const tools = buildCodexToolList(config);
   const codex = new Codex({
     codexPathOverride: config.pathToCodexExecutable,
@@ -452,6 +477,7 @@ function buildKubeTrailCodexMcpServer(config: AgentRuntimeConfig, inputPath: str
   const command = currentAgentMcpCommand(config);
   const env: Record<string, string> = {
     KUBETRAIL_AGENT_ALLOW_MATERIALIZE: config.allowMaterializeSensitive ? "1" : "0",
+    KUBETRAIL_AGENT_LANGUAGE: config.language,
   };
   if (inputPath.trim()) {
     env.KUBETRAIL_RESULT_PATH = inputPath;

@@ -53,6 +53,7 @@ async function handleRequest(req: Request): Promise<void> {
             inputPath: req.params?.inputPath as string,
             resumeSession: req.params?.sessionId as string,
             forkSession: req.params?.forkSession === true,
+            skills: Array.isArray(req.params?.skills) ? req.params.skills.map(String) : undefined,
             abortController,
             onEvent: (event) => {
               if (event.type !== "result") {

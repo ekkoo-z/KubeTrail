@@ -12,6 +12,7 @@ import {
   categoryLabel,
   type PersistenceTechniqueCard,
 } from '../data/persistenceCatalog'
+import { currentLocale, t, translateText } from '../i18n'
 
 const props = defineProps<{ clusterId: string }>()
 
@@ -38,6 +39,19 @@ const matchingResources = computed(() => {
     (r) => r.technique === selectedTechnique.value!.technique,
   )
 })
+
+function tx(value: unknown): string {
+  const text = String(value ?? '')
+  return currentLocale.value === 'en-US' ? translateText(text) : text
+}
+
+function riskText(level: string): string {
+  return tx(riskLabel(level))
+}
+
+function categoryText(category: string): string {
+  return tx(categoryLabel(category))
+}
 
 // --- Lifecycle ---
 onMounted(() => {
@@ -77,10 +91,12 @@ async function executeTechnique() {
     try {
       await ElMessageBox.confirm(
         buildRiskConfirmMessage(card),
-        `确认执行${riskLabel(card.riskLevel)}操作 - ${card.label}`,
+        currentLocale.value === 'en-US'
+          ? `Confirm ${riskText(card.riskLevel)} operation - ${tx(card.label)}`
+          : `确认执行${riskLabel(card.riskLevel)}操作 - ${card.label}`,
         {
-          confirmButtonText: '我已理解，执行',
-          cancelButtonText: '取消',
+          confirmButtonText: currentLocale.value === 'en-US' ? 'I understand, execute' : '我已理解，执行',
+          cancelButtonText: t('取消'),
           type: card.riskLevel === 'high' ? 'error' : 'warning',
         },
       )
@@ -96,7 +112,7 @@ async function executeTechnique() {
     const result = await dispatchTechnique(card, formValues)
     operationResult.value = result
     if (result?.success || result?.token || result?.kubeconfig) {
-      ElMessage.success(`${card.label} 执行成功`)
+      ElMessage.success(currentLocale.value === 'en-US' ? `${tx(card.label)} executed successfully` : `${card.label} 执行成功`)
     } else if (result?.error) {
       ElMessage.warning(result.error)
     }
@@ -110,16 +126,23 @@ async function executeTechnique() {
 }
 
 function buildRiskConfirmMessage(card: PersistenceTechniqueCard): string {
-  const lines = [
-    `即将执行「${card.label}」。`,
-    '',
-    '该操作会在当前集群中创建或修改资源，可能影响工作负载调度、凭据继承、审计告警或后续清理。',
-    '如果你不清楚这个功能的用途、会改动哪些资源，或不确定如何回滚，请先取消并查看说明。',
-  ]
+  const lines = currentLocale.value === 'en-US'
+    ? [
+        `You are about to execute "${tx(card.label)}".`,
+        '',
+        'This operation will create or modify resources in the current cluster and may affect workload scheduling, credential inheritance, audit alerts, or cleanup.',
+        'If you are not clear about what this does, which resources it changes, or how to roll it back, cancel first and review the description.',
+      ]
+    : [
+        `即将执行「${card.label}」。`,
+        '',
+        '该操作会在当前集群中创建或修改资源，可能影响工作负载调度、凭据继承、审计告警或后续清理。',
+        '如果你不清楚这个功能的用途、会改动哪些资源，或不确定如何回滚，请先取消并查看说明。',
+      ]
   if (card.riskNotes?.length) {
-    lines.push('', '风险提示：', ...card.riskNotes.map((note) => `- ${note}`))
+    lines.push('', currentLocale.value === 'en-US' ? 'Risk notes:' : '风险提示：', ...card.riskNotes.map((note) => `- ${tx(note)}`))
   }
-  lines.push('', '确认已理解影响后再继续执行。')
+  lines.push('', currentLocale.value === 'en-US' ? 'Continue only after you understand the impact.' : '确认已理解影响后再继续执行。')
   return lines.join('\n')
 }
 
@@ -184,9 +207,12 @@ function shellCommand(value: string): string[] {
 async function deleteResource(resource: any) {
   const label = resource.detail || `${resource.technique}/${resource.resourceName}`
   try {
-    await ElMessageBox.confirm(`确认删除 ${label}？此操作不可撤销。`, '确认删除', {
-      confirmButtonText: '删除',
-      cancelButtonText: '取消',
+    await ElMessageBox.confirm(
+      currentLocale.value === 'en-US' ? `Delete ${label}? This cannot be undone.` : `确认删除 ${label}？此操作不可撤销。`,
+      currentLocale.value === 'en-US' ? 'Confirm Delete' : '确认删除',
+      {
+      confirmButtonText: t('删除'),
+      cancelButtonText: t('取消'),
       type: 'warning',
     })
   } catch {
@@ -200,14 +226,14 @@ async function deleteResource(resource: any) {
       resource.namespace || '',
       resource.resourceName,
     )
-    ElMessage.success(`已删除 ${label}`)
+    ElMessage.success(currentLocale.value === 'en-US' ? `Deleted ${label}` : `已删除 ${label}`)
     // If selected technique matches, clear result.
     if (selectedTechnique.value?.technique === resource.technique) {
       operationResult.value = null
     }
     await loadResources()
   } catch (e: any) {
-    ElMessage.error(`删除失败: ${e}`)
+    ElMessage.error(`${currentLocale.value === 'en-US' ? 'Delete failed' : '删除失败'}: ${e}`)
   }
 }
 
@@ -236,9 +262,9 @@ async function viewResource(res: any) {
 async function copyText(value: string, msg = '已复制') {
   try {
     await navigator.clipboard.writeText(value)
-    ElMessage.success(msg)
+    ElMessage.success(tx(msg))
   } catch {
-    ElMessage.error('复制失败，请手动选取')
+    ElMessage.error(currentLocale.value === 'en-US' ? 'Copy failed. Select the text manually.' : '复制失败，请手动选取')
   }
 }
 
@@ -246,7 +272,7 @@ async function saveKubeconfigFile() {
   if (!operationResult.value) return
   try {
     await api.SaveKubeconfigFile(operationResult.value as any)
-    ElMessage.success('Kubeconfig 已保存')
+    ElMessage.success(currentLocale.value === 'en-US' ? 'Kubeconfig saved' : 'Kubeconfig 已保存')
   } catch (e: any) {
     ElMessage.error(String(e))
   }
@@ -301,13 +327,13 @@ function techIcon(technique: string) {
           >
             <div class="persist-item__head">
               <component :is="techIcon(card.technique)" class="persist-item__icon" />
-              <span class="persist-item__label">{{ card.label }}</span>
+              <span class="persist-item__label">{{ tx(card.label) }}</span>
             </div>
             <div class="persist-item__meta">
               <span class="persist-item__tag" :class="`is-${riskVariant(card.riskLevel)}`">
-                {{ riskLabel(card.riskLevel) }}
+                {{ riskText(card.riskLevel) }}
               </span>
-              <span class="persist-item__cat">{{ categoryLabel(card.category) }}</span>
+              <span class="persist-item__cat">{{ categoryText(card.category) }}</span>
             </div>
           </div>
           <div v-if="!filteredCatalog.length" class="persist-rail__empty">无匹配手法</div>
@@ -431,12 +457,12 @@ function techIcon(technique: string) {
         <!-- Header -->
         <header class="persist-pane__head">
           <span class="persist-badge" :class="`is-${riskVariant(selectedTechnique.riskLevel)}`">
-            {{ riskLabel(selectedTechnique.riskLevel) }}
+            {{ riskText(selectedTechnique.riskLevel) }}
           </span>
-          <span class="persist-cat-tag">{{ categoryLabel(selectedTechnique.category) }}</span>
+          <span class="persist-cat-tag">{{ categoryText(selectedTechnique.category) }}</span>
           <div class="persist-pane__title">
-            <div class="persist-pane__name">{{ selectedTechnique.label }}</div>
-            <div class="persist-pane__desc">{{ selectedTechnique.description }}</div>
+            <div class="persist-pane__name">{{ tx(selectedTechnique.label) }}</div>
+            <div class="persist-pane__desc">{{ tx(selectedTechnique.description) }}</div>
           </div>
         </header>
 
@@ -459,7 +485,7 @@ function techIcon(technique: string) {
               :key="param.key"
               class="persist-form__row"
             >
-              <label class="persist-form__label">{{ param.label }}</label>
+              <label class="persist-form__label">{{ tx(param.label) }}</label>
               <template v-if="param.type === 'boolean'">
                 <el-switch v-model="formValues[param.key]" size="small" />
               </template>
@@ -467,7 +493,7 @@ function techIcon(technique: string) {
                 <input
                   v-model="formValues[param.key]"
                   class="persist-form__input"
-                  :placeholder="param.placeholder || ''"
+                  :placeholder="tx(param.placeholder || '')"
                   :type="param.type === 'number' ? 'number' : 'text'"
                 />
               </template>
@@ -479,7 +505,7 @@ function techIcon(technique: string) {
         <div v-if="selectedTechnique.riskNotes?.length" class="persist-section">
           <div class="persist-section__title">注意事项</div>
           <ul class="persist-notes">
-            <li v-for="note in selectedTechnique.riskNotes" :key="note">{{ note }}</li>
+            <li v-for="note in selectedTechnique.riskNotes" :key="note">{{ tx(note) }}</li>
           </ul>
         </div>
 
@@ -491,7 +517,7 @@ function techIcon(technique: string) {
             :disabled="loading"
             @click="executeTechnique"
           >
-            {{ loading ? '执行中...' : `执行 - ${selectedTechnique.label}` }}
+            {{ loading ? tx('执行中...') : `${tx('执行')} - ${tx(selectedTechnique.label)}` }}
           </button>
         </div>
 

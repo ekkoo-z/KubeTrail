@@ -20,6 +20,7 @@ import (
 
 type AgentConfig struct {
 	Provider         string            `json:"provider,omitempty"`
+	Language         string            `json:"language,omitempty"`
 	APIKey           string            `json:"apiKey"`
 	BaseURL          string            `json:"baseUrl,omitempty"`
 	Model            string            `json:"model,omitempty"`
@@ -255,6 +256,7 @@ func (m *Manager) Start(config AgentConfig) error {
 func agentEnv(base []string, config AgentConfig) []string {
 	env := append([]string(nil), base...)
 	env = appendEnv(env, "KUBETRAIL_AGENT_PROVIDER", normalizeAgentProvider(config.Provider))
+	env = appendEnv(env, "KUBETRAIL_AGENT_LANGUAGE", normalizeAgentLanguage(config.Language))
 	if strings.TrimSpace(envValueFromList(env, "KUBETRAIL_AGENT_RUNTIME_DIR")) == "" {
 		if dir := defaultAgentRuntimeDir(); dir != "" {
 			env = appendEnv(env, "KUBETRAIL_AGENT_RUNTIME_DIR", dir)
@@ -298,6 +300,15 @@ func normalizeAgentProvider(provider string) string {
 		return "codex"
 	default:
 		return "claude"
+	}
+}
+
+func normalizeAgentLanguage(language string) string {
+	switch strings.ToLower(strings.TrimSpace(language)) {
+	case "en", "en-us":
+		return "en-US"
+	default:
+		return "zh-CN"
 	}
 }
 

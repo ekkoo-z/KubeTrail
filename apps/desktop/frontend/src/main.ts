@@ -36,6 +36,7 @@ import '@xterm/xterm/css/xterm.css'
 
 import App from './App.vue'
 import router from './router'
+import { startDomTranslator } from './i18n'
 import './style.css'
 
 const app = createApp(App)
@@ -88,3 +89,4 @@ for (const icon of [
   app.component(icon.name!, icon)
 }
 app.mount('#app')
+startDomTranslator()

@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { api, on } from '../api/wails'
 import { useAgentStore } from '../stores/agent'
 import { useScanStore, type ScanResult } from '../stores/scan'
+import { currentLocale, t } from '../i18n'
 import ExpForgePanel from './ExpForgePanel.vue'
 
 const props = defineProps<{ clusterId?: string }>()
@@ -81,7 +82,7 @@ const engineSurfaceFindings = computed(() => {
     !isClusterAdminFinding(f) && String(f?.origin ?? '') !== 'agent'
   )
 })
-const promptSuggestions = [
+const zhPromptSuggestions = [
   {
     label: 'RBAC 权限横移',
     prompt: [
@@ -139,6 +140,65 @@ const promptSuggestions = [
     ].join('\n'),
   },
 ]
+const enPromptSuggestions = [
+  {
+    label: 'RBAC Lateral Movement',
+    prompt: [
+      'First use Skill: k8s-rbac-analysis, then analyze RBAC lateral movement paths based on the current KubeTrail scan result.',
+      'Focus on ServiceAccounts, Role/ClusterRole, RoleBinding/ClusterRoleBinding, impersonate, pods/exec, pods/attach, pods/portforward, secrets, configmaps, deployments, daemonsets, jobs/cronjobs, nodes/proxy, and similar permission signals.',
+      'Output in this format:',
+      '1. Skills used: state that k8s-rbac-analysis was used, and whether serviceaccount-secret-material, kubelet-runtime-etcd-bypass, workload-controller-persistence, or exp-generation should be combined.',
+      '2. Feasible attack paths: ordered step chains from the current identity to target resources, namespaces, or nodes.',
+      '3. Key evidence: list relevant factIds, namespaces, resources, verbs, bindings, or subject names; explicitly state when evidence is missing.',
+      '4. Blocked or infeasible paths: explain missing verbs/resources or denied API access.',
+      '5. Next actions: provide the authorized red-team validation order, EXP templates or additional facts needed, and distinguish read-only checks from side-effecting actions.',
+    ].join('\n'),
+  },
+  {
+    label: 'Linux LPE',
+    prompt: [
+      'First use Skill: exp-generation; if runtime constraints need judgment, combine Skill: pod-escape-surface. Then analyze Linux local privilege escalation risk inside the container/Pod based on the current KubeTrail scan result.',
+      'Focus on kernel version, distro, architecture, capabilities, seccomp/AppArmor/SELinux, privileged containers, hostPID/hostIPC, mounts, SUID/SGID, writable paths, runtime information, and known LPE template matches.',
+      'Output in this format:',
+      '1. Skills used: state that exp-generation was used and whether pod-escape-surface was combined.',
+      '2. Feasible attack paths: explain the local privilege escalation entrypoint, applicability conditions, expected privilege result, and confidence.',
+      '3. Key evidence: list relevant factIds, versions, config items, file paths, permission bits, or template matches; explicitly state when evidence is missing.',
+      '4. Blocking conditions: list seccomp, capabilities, read-only filesystems, kernel patches, distro backports, or other factors that may prevent exploitation.',
+      '5. Next actions: provide the authorized validation order, candidate EXP templates, read-only facts to collect, and side-effect boundaries.',
+    ].join('\n'),
+  },
+  {
+    label: 'Container Escape',
+    prompt: [
+      'First use Skill: pod-escape-surface, then analyze container escape and node takeover risk based on the current KubeTrail scan result.',
+      'If kubelet, CRI, etcd, runtime socket, or nodes/proxy evidence appears, combine Skill: kubelet-runtime-etcd-bypass; if a validation plan is needed, combine Skill: exp-generation.',
+      'Focus on privileged, capabilities, hostPath, hostNetwork, hostPID, hostIPC, Docker/containerd/socket mounts, proc/sys mounts, service account tokens, kubelet/CRI access, node credentials, and sensitive host file exposure.',
+      'Output in this format:',
+      '1. Skills used: state that pod-escape-surface was used and whether kubelet-runtime-etcd-bypass or exp-generation was combined.',
+      '2. Feasible attack paths: step chains from the current Pod to the host, kubelet, CRI, node credentials, or cluster control plane.',
+      '3. Key evidence: list relevant factIds, Pod/Container, mount, capability, namespace, node, or sensitiveRef; explicitly state when evidence is missing.',
+      '4. Infeasible paths: explain missing mounts, permissions, network reachability, or API permissions.',
+      '5. Next actions: provide the authorized validation order, candidate EXP templates, additional read-only facts, and side-effect boundaries.',
+    ].join('\n'),
+  },
+  {
+    label: 'Full Check',
+    prompt: [
+      'Run a complete attack surface review of the current KubeTrail scan result, covering RBAC lateral movement, Linux local privilege escalation, and container escape risk.',
+      'Use Skill: k8s-rbac-analysis, exp-generation, and pod-escape-surface. Combine kubelet-runtime-etcd-bypass when kubelet/CRI/etcd/nodes-proxy evidence appears, and combine serviceaccount-secret-material when sensitive material evidence appears.',
+      'Start with a prioritized attack-path overview, then analyze each module. Every conclusion must be tied to scan evidence; mark anything that cannot be confirmed from the result as missing evidence and do not invent facts.',
+      'Output in this format:',
+      '1. Skills used: list the actual skills used and the judgment boundary for each skill.',
+      '2. Attack path overview: rank high/medium/low and explain the paths worth validating first.',
+      '3. RBAC lateral movement: feasible paths, key evidence, blockers, and next actions.',
+      '4. Linux LPE: feasible paths, key evidence, blockers, and next actions.',
+      '5. Container escape: feasible paths, key evidence, infeasible paths, and next actions.',
+      '6. Gap list: read-only facts needed to improve confidence.',
+      '7. Next attack action queue: authorized validation order, candidate EXP templates, expected result, and side-effect boundaries.',
+    ].join('\n'),
+  },
+]
+const promptSuggestions = computed(() => currentLocale.value === 'en-US' ? enPromptSuggestions : zhPromptSuggestions)
 
 let unsubs: (() => void)[] = []
 let chatUnsubs: (() => void)[] = []
@@ -232,7 +292,7 @@ async function loadSkills() {
       skillContent.value = ''
     }
   } catch (e: any) {
-    ;(window as any).ElMessage?.error?.(`Skills 加载失败: ${e}`)
+    ;(window as any).ElMessage?.error?.(`${t('Skills 加载失败')}: ${e}`)
   } finally {
     skillsLoading.value = false
   }
@@ -246,7 +306,7 @@ async function selectSkill(name: string) {
     skillContent.value = skill.content || ''
     newSkillName.value = ''
   } catch (e: any) {
-    ;(window as any).ElMessage?.error?.(`Skill 读取失败: ${e}`)
+    ;(window as any).ElMessage?.error?.(`${t('Skill 读取失败')}: ${e}`)
   }
 }
 
@@ -265,11 +325,11 @@ async function saveSkill() {
   if (agentBusy.value) return
   const name = (selectedSkillName.value || newSkillName.value).trim()
   if (!name) {
-    ;(window as any).ElMessage?.warning?.('请输入 Skill 名称')
+    ;(window as any).ElMessage?.warning?.(t('请输入 Skill 名称'))
     return
   }
   if (!skillContent.value.trim()) {
-    ;(window as any).ElMessage?.warning?.('Skill 内容不能为空')
+    ;(window as any).ElMessage?.warning?.(t('Skill 内容不能为空'))
     return
   }
   skillSaving.value = true
@@ -280,9 +340,9 @@ async function saveSkill() {
     skillContent.value = saved.content || skillContent.value
     await loadSkills()
     agentStore.setStatus(await api.GetAgentStatus() as any)
-    ;(window as any).ElMessage?.success?.('Skill 已保存，Agent 会在下次运行时重新加载')
+    ;(window as any).ElMessage?.success?.(t('Skill 已保存，Agent 将在下次启动时加载最新内容'))
   } catch (e: any) {
-    ;(window as any).ElMessage?.error?.(`Skill 保存失败: ${e}`)
+    ;(window as any).ElMessage?.error?.(`${t('Skill 保存失败')}: ${e}`)
   } finally {
     skillSaving.value = false
   }
@@ -290,7 +350,7 @@ async function saveSkill() {
 
 async function deleteSkill(name: string) {
   if (!name || agentBusy.value) return
-  if (!window.confirm(`删除 Skill "${name}"？`)) return
+  if (!window.confirm(currentLocale.value === 'en-US' ? `Delete Skill "${name}"?` : `删除 Skill "${name}"？`)) return
   skillSaving.value = true
   try {
     await api.DeleteAgentSkill(name)
@@ -300,9 +360,9 @@ async function deleteSkill(name: string) {
     }
     await loadSkills()
     agentStore.setStatus(await api.GetAgentStatus() as any)
-    ;(window as any).ElMessage?.success?.('Skill 已删除，Agent 会在下次运行时重新加载')
+    ;(window as any).ElMessage?.success?.(t('Skill 已删除，Agent 将在下次启动时移除它'))
   } catch (e: any) {
-    ;(window as any).ElMessage?.error?.(`Skill 删除失败: ${e}`)
+    ;(window as any).ElMessage?.error?.(`${t('Skill 删除失败')}: ${e}`)
   } finally {
     skillSaving.value = false
   }
@@ -318,7 +378,7 @@ async function sendMessage() {
   const msg = inputMsg.value.trim()
   if (!msg || agentStore.streaming) return
   if (aiAnalysisLoading.value) {
-    ;(window as any).ElMessage?.warning?.('一键智能分析正在运行，请中断或等待完成后再继续对话')
+    ;(window as any).ElMessage?.warning?.(t('一键智能分析正在运行，请中断或等待完成后再继续对话'))
     return
   }
 
@@ -329,14 +389,14 @@ async function sendMessage() {
   agentStore.streaming = true
 
   if (!isReady.value) {
-    agentStore.addMessage({ role: 'system', content: 'Agent 正在启动...', timestamp: Date.now() })
+    agentStore.addMessage({ role: 'system', content: currentLocale.value === 'en-US' ? 'Agent is starting...' : 'Agent 正在启动...', timestamp: Date.now() })
     try {
       await api.EnsureAgentRunning()
       const s = await api.GetAgentStatus()
       agentStore.setStatus(s as any)
     } catch (e: any) {
       agentStore.streaming = false
-      agentStore.addMessage({ role: 'system', content: `Agent 启动失败: ${e}`, timestamp: Date.now() })
+      agentStore.addMessage({ role: 'system', content: `${t('Agent 启动失败')}: ${e}`, timestamp: Date.now() })
       return
     }
   }
@@ -375,7 +435,7 @@ async function sendMessage() {
       } else if (event.type === 'error') {
         agentStore.streaming = false
         pendingPrompt.value = ''
-        const text = event.message || event.text || 'Agent 执行失败'
+        const text = event.message || event.text || (currentLocale.value === 'en-US' ? 'Agent execution failed' : 'Agent 执行失败')
         const last = agentStore.messages[agentStore.messages.length - 1]
         if (last?.role === 'assistant' && !last.content) {
           last.content = `Error: ${text}`
@@ -439,14 +499,24 @@ function buildChatMessageForAgent(message: string): string {
     evidence: Array.isArray(finding?.evidence) ? finding.evidence : [],
     nextSteps: Array.isArray(finding?.nextSteps) ? finding.nextSteps : [],
   }))
-  return [
-    '以下是此前“一键智能分析攻击面”的缓存结果，仅作为本轮对话上下文。',
-    '不要重新执行一键全量攻击面分析，不要覆盖攻击面列表，也不要输出新的结构化 findings JSON，除非用户明确要求重新研判。',
-    '可以按需基于扫描证据继续解释、深入某个 finding、补充验证计划或查询具体 fact。',
-    JSON.stringify({ status: cached?.status || '', findings: context }, null, 2),
-    '',
-    `用户问题: ${message}`,
-  ].join('\n')
+  const header = currentLocale.value === 'en-US'
+    ? [
+        'The following is the cached result from the previous one-click AI attack surface analysis. Use it only as context for this turn.',
+        'Do not rerun the full one-click attack surface analysis, do not overwrite the attack surface list, and do not output new structured findings JSON unless the user explicitly asks for a fresh review.',
+        'You may continue from scan evidence to explain, deepen a finding, add a validation plan, or query specific facts as needed.',
+        JSON.stringify({ status: cached?.status || '', findings: context }, null, 2),
+        '',
+        `User question: ${message}`,
+      ]
+    : [
+        '以下是此前“一键智能分析攻击面”的缓存结果，仅作为本轮对话上下文。',
+        '不要重新执行一键全量攻击面分析，不要覆盖攻击面列表，也不要输出新的结构化 findings JSON，除非用户明确要求重新研判。',
+        '可以按需基于扫描证据继续解释、深入某个 finding、补充验证计划或查询具体 fact。',
+        JSON.stringify({ status: cached?.status || '', findings: context }, null, 2),
+        '',
+        `用户问题: ${message}`,
+      ]
+  return header.join('\n')
 }
 
 async function resumeSessionIdForCurrentProvider(): Promise<string> {
@@ -475,7 +545,7 @@ async function stopAndEditMessage() {
   const stoppingAiAnalysis = aiAnalysisSessionId === sid
   if (stoppingAiAnalysis) {
     aiAnalysisStopRequested = true
-    aiAnalysisStatus.value = '正在中断 AI 分析...'
+    aiAnalysisStatus.value = currentLocale.value === 'en-US' ? 'Stopping AI analysis...' : '正在中断 AI 分析...'
     cleanupAiAnalysisListeners()
   }
   agentStore.streaming = false
@@ -487,13 +557,13 @@ async function stopAndEditMessage() {
   try {
     await (api as any).StopAgentChat(sid)
   } catch (e: any) {
-    ;(window as any).ElMessage?.warning?.(`中断失败: ${e}`)
+    ;(window as any).ElMessage?.warning?.(`${t('中断失败')}: ${e}`)
   } finally {
     if (stoppingAiAnalysis) {
       aiAnalysisLoading.value = false
       aiAnalysisSessionId = ''
       aiAnalysisStopRequested = false
-      aiAnalysisStatus.value = 'AI 分析已中断'
+      aiAnalysisStatus.value = currentLocale.value === 'en-US' ? 'AI analysis stopped' : 'AI 分析已中断'
     }
     stoppingChat.value = false
     scrollToBottom()
@@ -515,7 +585,7 @@ async function loadGraph(): Promise<boolean> {
     setGraphData(typeof data === 'string' ? JSON.parse(data) : data)
     return true
   } catch (e: any) {
-    ;(window as any).ElMessage?.error?.(`攻击面加载失败: ${e}`)
+    ;(window as any).ElMessage?.error?.(`${currentLocale.value === 'en-US' ? 'Failed to load attack surface' : '攻击面加载失败'}: ${e}`)
     return false
   } finally {
     graphLoading.value = false
@@ -525,7 +595,7 @@ async function loadGraph(): Promise<boolean> {
 async function runAiSurfaceAnalysis() {
   if (!scanStore.activeResultId || aiAnalysisLoading.value) return
   if (agentStore.streaming) {
-    ;(window as any).ElMessage?.warning?.('当前对话正在运行，请稍后再执行一键智能分析')
+    ;(window as any).ElMessage?.warning?.(currentLocale.value === 'en-US' ? 'A chat is currently running. Run one-click AI analysis later.' : '当前对话正在运行，请稍后再执行一键智能分析')
     return
   }
   if (!graphData.value) {
@@ -535,16 +605,18 @@ async function runAiSurfaceAnalysis() {
 
   cleanupAiAnalysisListeners()
   if (!agentStore.sessionId) agentStore.newSession()
-  const visiblePrompt = '请基于当前扫描结果执行一键智能攻击面研判，并把 AI 确认的问题同步到攻击面列表。'
+  const visiblePrompt = currentLocale.value === 'en-US'
+    ? 'Run one-click AI attack surface analysis based on the current scan result and sync AI-confirmed findings into the attack surface list.'
+    : '请基于当前扫描结果执行一键智能攻击面研判，并把 AI 确认的问题同步到攻击面列表。'
   const sid = surfaceAnalysisSessionId()
   aiAnalysisLoading.value = true
-  aiAnalysisStatus.value = 'Agent 启动中...'
+  aiAnalysisStatus.value = currentLocale.value === 'en-US' ? 'Agent starting...' : 'Agent 启动中...'
   if (graphData.value) setGraphData(graphData.value)
   aiAnalysisSessionId = sid
   aiAnalysisStopRequested = false
   agentStore.clearRuntimeInfo()
   agentStore.addMessage({ role: 'user', content: visiblePrompt, timestamp: Date.now() })
-  agentStore.addMessage({ role: 'assistant', content: '正在启动 AI 攻击面研判...', timestamp: Date.now() })
+  agentStore.addMessage({ role: 'assistant', content: currentLocale.value === 'en-US' ? 'Starting AI attack surface analysis...' : '正在启动 AI 攻击面研判...', timestamp: Date.now() })
   const activeScan = scanStore.results.find(r => r.id === scanStore.activeResultId)
   if (activeScan?.sourcePath) agentStore.setScanSourcePath(activeScan.sourcePath)
   subTab.value = 'chat'
@@ -560,11 +632,11 @@ async function runAiSurfaceAnalysis() {
     aiAnalysisStopRequested = false
     cleanupAiAnalysisListeners()
     if (ok) {
-      aiAnalysisStatus.value = message || `AI 已识别 ${aiFindings.value.length} 个攻击面`
+      aiAnalysisStatus.value = message || (currentLocale.value === 'en-US' ? `AI identified ${aiFindings.value.length} attack surface findings` : `AI 已识别 ${aiFindings.value.length} 个攻击面`)
       persistCurrentAiSurfaceAnalysis(aiAnalysisStatus.value)
       ;(window as any).ElMessage?.success?.(aiAnalysisStatus.value)
     } else {
-      aiAnalysisStatus.value = message || 'AI 分析失败'
+      aiAnalysisStatus.value = message || (currentLocale.value === 'en-US' ? 'AI analysis failed' : 'AI 分析失败')
       ;(window as any).ElMessage?.error?.(aiAnalysisStatus.value)
     }
   }
@@ -581,19 +653,27 @@ async function runAiSurfaceAnalysis() {
         })
         const modelLabel = event.model || 'model'
         const skillsLoaded = Array.isArray(event.skills) ? event.skills.length : 0
-        aiAnalysisStatus.value = `Agent 分析中 · ${modelLabel} · ${skillsLoaded} Skills 已加载`
-        const initMsg = [
-          `启动分析: ${modelLabel}`,
-          `已加载 ${skillsLoaded} 个分析技能`,
-          '正在加载扫描结果...',
-        ].join('\n')
+        aiAnalysisStatus.value = currentLocale.value === 'en-US'
+          ? `Agent analyzing · ${modelLabel} · ${skillsLoaded} skills loaded`
+          : `Agent 分析中 · ${modelLabel} · ${skillsLoaded} Skills 已加载`
+        const initMsg = currentLocale.value === 'en-US'
+          ? [
+              `Analysis started: ${modelLabel}`,
+              `${skillsLoaded} analysis skills loaded`,
+              'Loading scan result...',
+            ].join('\n')
+          : [
+              `启动分析: ${modelLabel}`,
+              `已加载 ${skillsLoaded} 个分析技能`,
+              '正在加载扫描结果...',
+            ].join('\n')
         updateAiAnalysisChat(initMsg)
       } else if (event.type === 'tool_use') {
         const label = formatToolUseLabel(event.toolName, event.skillName, event.toolInput)
         aiAnalysisStatus.value = label
         appendAnalysisLog(label)
       } else if (event.type === 'assistant' && event.text) {
-        aiAnalysisStatus.value = 'Agent 正在生成分析结果...'
+        aiAnalysisStatus.value = currentLocale.value === 'en-US' ? 'Agent is generating analysis results...' : 'Agent 正在生成分析结果...'
         updateAiAnalysisChat(String(event.text))
         scrollToBottom()
       } else if (event.type === 'system' && event.text) {
@@ -606,14 +686,18 @@ async function runAiSurfaceAnalysis() {
           applyAiSurfaceFindings(findings)
           updateAiAnalysisChat(formatAiSurfaceChatResult(rawText, findings))
           scrollToBottom()
-          finish(true, findings.length ? `AI 已识别 ${findings.length} 个攻击面` : 'AI 未返回新的可解析攻击面')
+          finish(true, findings.length
+            ? (currentLocale.value === 'en-US' ? `AI identified ${findings.length} attack surface findings` : `AI 已识别 ${findings.length} 个攻击面`)
+            : (currentLocale.value === 'en-US' ? 'AI did not return new parseable attack surface findings' : 'AI 未返回新的可解析攻击面'))
         } catch (e: any) {
-          updateAiAnalysisChatError(`AI 结果解析失败: ${e?.message || e}`)
-          finish(false, `AI 结果解析失败: ${e?.message || e}`)
+          const message = currentLocale.value === 'en-US' ? `Failed to parse AI result: ${e?.message || e}` : `AI 结果解析失败: ${e?.message || e}`
+          updateAiAnalysisChatError(message)
+          finish(false, message)
         }
       } else if (event.type === 'error') {
-        updateAiAnalysisChatError(event.message || event.text || 'Agent 执行失败')
-        finish(false, event.message || event.text || 'Agent 执行失败')
+        const message = event.message || event.text || (currentLocale.value === 'en-US' ? 'Agent execution failed' : 'Agent 执行失败')
+        updateAiAnalysisChatError(message)
+        finish(false, message)
       }
     } catch {
       // Ignore malformed stream fragments; the final result event is authoritative.
@@ -628,19 +712,21 @@ async function runAiSurfaceAnalysis() {
   addAiAnalysisUnsub(on(`agent:${sid}:done`, () => {
     if (finished) return
     if (aiAnalysisStopRequested) {
-      updateAiAnalysisChatError('AI 攻击面研判已中断')
-      finish(false, 'AI 分析已中断')
+      updateAiAnalysisChatError(currentLocale.value === 'en-US' ? 'AI attack surface analysis was stopped' : 'AI 攻击面研判已中断')
+      finish(false, currentLocale.value === 'en-US' ? 'AI analysis stopped' : 'AI 分析已中断')
       return
     }
     if (!structuredResultReceived) {
-      finish(false, 'AI 分析结束，但未返回结构化结果')
+      finish(false, currentLocale.value === 'en-US' ? 'AI analysis finished but did not return a structured result' : 'AI 分析结束，但未返回结构化结果')
       return
     }
-    finish(true, aiFindings.value.length ? `AI 已识别 ${aiFindings.value.length} 个攻击面` : 'AI 未返回新的可解析攻击面')
+    finish(true, aiFindings.value.length
+      ? (currentLocale.value === 'en-US' ? `AI identified ${aiFindings.value.length} attack surface findings` : `AI 已识别 ${aiFindings.value.length} 个攻击面`)
+      : (currentLocale.value === 'en-US' ? 'AI did not return new parseable attack surface findings' : 'AI 未返回新的可解析攻击面'))
   }))
 
   try {
-    aiAnalysisStatus.value = 'Agent 分析中...'
+    aiAnalysisStatus.value = currentLocale.value === 'en-US' ? 'Agent analyzing...' : 'Agent 分析中...'
     await api.StartAgentChat(scanStore.activeResultId, buildAiSurfacePrompt(), sid, '')
   } catch (e: any) {
     updateAiAnalysisChatError(String(e?.message || e))
@@ -659,7 +745,7 @@ function updateAiAnalysisChat(content: string) {
 }
 
 function updateAiAnalysisChatError(message: string) {
-  const text = String(message || 'Agent 执行失败').trim()
+  const text = String(message || (currentLocale.value === 'en-US' ? 'Agent execution failed' : 'Agent 执行失败')).trim()
   const last = agentStore.messages[agentStore.messages.length - 1]
   if (last?.role === 'assistant' && last.content.trim()) {
     agentStore.setLastAssistantContent(`${last.content.trim()}\n\nError: ${text}`)
@@ -671,21 +757,34 @@ function updateAiAnalysisChatError(message: string) {
 
 function formatToolUseLabel(toolName: string, skillName?: string, _input?: Record<string, unknown>): string {
   if (toolName === 'Skill' && skillName) {
-    return `调用分析技能: ${skillName}`
+    return currentLocale.value === 'en-US' ? `Calling analysis skill: ${skillName}` : `调用分析技能: ${skillName}`
   }
-  const labelMap: Record<string, string> = {
-    kubetrail_load_result: '加载扫描结果...',
-    kubetrail_summary: '读取目标上下文摘要...',
-    kubetrail_list_facts: '枚举采集事实列表...',
-    kubetrail_get_fact: '获取具体事实详情...',
-    kubetrail_list_sensitive_refs: '列举敏感材料引用...',
-    kubetrail_materialize_ref: '物化敏感材料...',
-    Bash: '执行只读验证命令...',
-    Read: '读取文件...',
-    Grep: '搜索内容...',
-    Glob: '查找文件...',
-  }
-  return labelMap[toolName] || `调用工具: ${toolName}`
+  const labelMap: Record<string, string> = currentLocale.value === 'en-US'
+    ? {
+        kubetrail_load_result: 'Loading scan result...',
+        kubetrail_summary: 'Reading target context summary...',
+        kubetrail_list_facts: 'Listing collected facts...',
+        kubetrail_get_fact: 'Reading fact details...',
+        kubetrail_list_sensitive_refs: 'Listing sensitive material refs...',
+        kubetrail_materialize_ref: 'Materializing sensitive material...',
+        Bash: 'Running read-only validation command...',
+        Read: 'Reading file...',
+        Grep: 'Searching content...',
+        Glob: 'Finding files...',
+      }
+    : {
+        kubetrail_load_result: '加载扫描结果...',
+        kubetrail_summary: '读取目标上下文摘要...',
+        kubetrail_list_facts: '枚举采集事实列表...',
+        kubetrail_get_fact: '获取具体事实详情...',
+        kubetrail_list_sensitive_refs: '列举敏感材料引用...',
+        kubetrail_materialize_ref: '物化敏感材料...',
+        Bash: '执行只读验证命令...',
+        Read: '读取文件...',
+        Grep: '搜索内容...',
+        Glob: '查找文件...',
+      }
+  return labelMap[toolName] || (currentLocale.value === 'en-US' ? `Calling tool: ${toolName}` : `调用工具: ${toolName}`)
 }
 
 function appendAnalysisLog(text: string) {
@@ -704,11 +803,11 @@ async function stopAiSurfaceAnalysis() {
   if (!aiAnalysisSessionId) return
   const sid = aiAnalysisSessionId
   aiAnalysisStopRequested = true
-  aiAnalysisStatus.value = '正在中断 AI 分析...'
+  aiAnalysisStatus.value = currentLocale.value === 'en-US' ? 'Stopping AI analysis...' : '正在中断 AI 分析...'
   try {
     await (api as any).StopAgentChat(sid)
   } catch (e: any) {
-    ;(window as any).ElMessage?.warning?.(`中断失败: ${e}`)
+    ;(window as any).ElMessage?.warning?.(`${t('中断失败')}: ${e}`)
   }
 }
 
@@ -733,7 +832,9 @@ function applyAiSurfaceFindings(findings: any[]) {
 function restoreAiSurfaceFindings() {
   const cached = agentStore.getSurfaceAnalysis(activeScanAnalysisKey.value)
   aiFindings.value = cached?.findings ?? []
-  aiAnalysisStatus.value = cached?.status || (aiFindings.value.length ? `AI 已识别 ${aiFindings.value.length} 个攻击面` : '')
+  aiAnalysisStatus.value = cached?.status || (aiFindings.value.length
+    ? (currentLocale.value === 'en-US' ? `AI identified ${aiFindings.value.length} attack surface findings` : `AI 已识别 ${aiFindings.value.length} 个攻击面`)
+    : '')
   if (graphData.value) {
     setGraphData(graphData.value)
   }
@@ -764,9 +865,9 @@ async function exportReport(format: 'json' | 'markdown') {
   exportLoading.value = true
   try {
     await (api as any).ExportAnalysisReport(scanStore.activeResultId, format)
-    ;(window as any).ElMessage?.success?.('报告导出成功')
+    ;(window as any).ElMessage?.success?.(currentLocale.value === 'en-US' ? 'Report exported' : '报告导出成功')
   } catch (e: any) {
-    ;(window as any).ElMessage?.error?.(`导出失败: ${e}`)
+    ;(window as any).ElMessage?.error?.(`${currentLocale.value === 'en-US' ? 'Export failed' : '导出失败'}: ${e}`)
   } finally {
     exportLoading.value = false
   }
@@ -799,7 +900,7 @@ async function restoreSessionScan() {
     const r = await api.ImportScanResultPath(path)
     if (r) scanStore.addResult(r as unknown as ScanResult)
   } catch {
-    ;(window as any).ElMessage?.warning?.('历史扫描结果文件不可用，请重新导入')
+    ;(window as any).ElMessage?.warning?.(currentLocale.value === 'en-US' ? 'The historical scan result file is unavailable. Import it again.' : '历史扫描结果文件不可用，请重新导入')
   }
 }
 
@@ -872,37 +973,23 @@ function openExpForFinding(finding: any) {
 }
 
 function severityLabel(value: string): string {
-  const labels: Record<string, string> = {
-    critical: '严重',
-    high: '高危',
-    medium: '中危',
-    low: '低危',
-    info: '信息',
-    unknown: '未知',
-    blocked: '不可利用',
-  }
+  const labels: Record<string, string> = currentLocale.value === 'en-US'
+    ? { critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low', info: 'Info', unknown: 'Unknown', blocked: 'Not exploitable' }
+    : { critical: '严重', high: '高危', medium: '中危', low: '低危', info: '信息', unknown: '未知', blocked: '不可利用' }
   return labels[value] || value
 }
 
 function categoryLabel(value: string): string {
-  const labels: Record<string, string> = {
-    escape: '逃逸',
-    exploit: '利用',
-    lpe: '提权',
-    material: '凭据',
-    blocked: '不可利用',
-    context: '上下文',
-  }
+  const labels: Record<string, string> = currentLocale.value === 'en-US'
+    ? { escape: 'Escape', exploit: 'Exploit', lpe: 'LPE', material: 'Material', blocked: 'Not exploitable', context: 'Context' }
+    : { escape: '逃逸', exploit: '利用', lpe: '提权', material: '凭据', blocked: '不可利用', context: '上下文' }
   return labels[value] || value
 }
 
 function originLabel(value: string): string {
-  const labels: Record<string, string> = {
-    graph: 'Graph',
-    document: 'Doc',
-    catalog: 'Catalog',
-    agent: 'AI 确认',
-  }
+  const labels: Record<string, string> = currentLocale.value === 'en-US'
+    ? { graph: 'Graph', document: 'Doc', catalog: 'Catalog', agent: 'AI confirmed' }
+    : { graph: 'Graph', document: 'Doc', catalog: 'Catalog', agent: 'AI 确认' }
   return labels[value] || value
 }
 
@@ -911,13 +998,9 @@ function isDocFinding(finding: any): boolean {
 }
 
 function confidenceLabel(value: string): string {
-  const labels: Record<string, string> = {
-    confirmed: '确认',
-    probable: '较高',
-    signal: '信号',
-    blocked: '不可利用',
-    unknown: '未知',
-  }
+  const labels: Record<string, string> = currentLocale.value === 'en-US'
+    ? { confirmed: 'Confirmed', probable: 'Probable', signal: 'Signal', blocked: 'Not exploitable', unknown: 'Unknown' }
+    : { confirmed: '确认', probable: '较高', signal: '信号', blocked: '不可利用', unknown: '未知' }
   return labels[value] || value
 }
 
@@ -955,6 +1038,62 @@ function buildAiSurfacePrompt(): string {
           : [],
       }, null, 2)
     : '{}'
+  if (currentLocale.value === 'en-US') {
+    return [
+      'Run one-click AI attack surface analysis on the current KubeTrail scan result.',
+      '',
+      '## Tool usage',
+      'You must first call kubetrail_load_result to load the scan data, then call kubetrail_summary, kubetrail_list_facts, and kubetrail_get_fact as needed to retrieve concrete evidence.',
+      '',
+      '## Skill usage (evidence-triggered only; do not call every skill generically)',
+      '- When RBAC evidence appears, call Skill: k8s-rbac-analysis for permission analysis.',
+      '- When Secret/Token/credential material appears, call Skill: serviceaccount-secret-material.',
+      '- When privileged/hostPath/capability/runtime socket evidence appears, call Skill: pod-escape-surface.',
+      '- When kernel version/SUID/capability evidence appears, call Skill: exp-generation to assess LPE feasibility.',
+      '- When kubelet/CRI/etcd/nodes-proxy evidence appears, call Skill: kubelet-runtime-etcd-bypass.',
+      '- This run only enables the core skills above; do not call every skill generically.',
+      '',
+      '## Coverage',
+      'Cover RBAC lateral movement, container escape, Linux LPE, credential/Secret material, and blocked or gap items. Output only verifiable attack surfaces supported by scan evidence.',
+      'Do not execute side-effecting actions and do not generate real attack execution steps; output only validation plans and evidence.',
+      '',
+      'Existing base graph summary, used to avoid repeating identical findings:',
+      graphSummary,
+      '',
+      '## Output requirements',
+      '- Start with a "🔍 Analysis Process" section that briefly explains the analysis steps, such as "loaded result -> checked RBAC -> checked escape surface -> evaluated LPE -> organized blocked items". Use one or two sentences per step to state what was found.',
+      '- End with one fenced JSON code block using the json language tag. This JSON is the desktop client’s only data source for parsing attack surfaces.',
+      '- Do not output anything after the JSON block.',
+      'JSON schema:',
+      '{',
+      '  "findings": [',
+      '    {',
+      '      "id": "short-stable-id",',
+      '      "title": "one-sentence English title",',
+      '      "category": "escape|exploit|lpe|material|blocked",',
+      '      "severity": "critical|high|medium|low|blocked",',
+      '      "confidence": "confirmed|probable|signal|blocked",',
+      '      "description": "why this is an attack surface, tied to facts",',
+      '      "evidence": ["factId", "factId:selector"],',
+      '      "templates": ["optional EXP template ID"],',
+      '      "nextSteps": ["read-only/controlled validation step", "facts that need more collection"],',
+      '      "clusterAdmin": false',
+      '    }',
+      '  ]',
+      '}',
+      'Rules:',
+      '- Highest priority: if SSRR contains a wildcard rule with verbs=["*"] + resources=["*"] + apiGroups=["*"], or if all cluster-control permissions in high_value_access + expanded_wildcards (clusterrolebindings_create, nodes_*, webhook_*, etc.) returned allowed:true, judge this as "cluster admin achieved".',
+      '- When cluster admin is established, output a finding with id="cluster-admin-achieved", clusterAdmin=true, title="Cluster admin privileges achieved", category="exploit", severity="critical", confidence="confirmed", and place it first in the findings array.',
+      '- For the cluster admin finding, templates and nextSteps must be empty arrays, and description must clearly state that no container escape or privilege escalation is required because the identity effectively controls the whole cluster.',
+      '- evidence may only use real factIds from the scan result, target/run/errors, or factId:specificPermissionID form.',
+      '- confidence=confirmed is only for attack surfaces directly proven feasible by scan evidence. AI-confirmed issues are displayed first in the desktop attack surface list.',
+      '- If the AI review determines "unlikely exploitable / key prerequisites missing / exclusion only", output category=blocked, severity=blocked, confidence=blocked; do not mark such conclusions as low.',
+      '- Blocked items still require evidence and nextSteps. nextSteps should explain why the path is not exploitable or what facts are needed before reassessment.',
+      '- If there is no evidence, do not output the finding.',
+      '- Output at most 12 findings, sorted by priority. The cluster admin finding must be first when present.',
+      '- If there is no new parseable attack surface, output {"findings":[]}.',
+    ].join('\n')
+  }
   return [
     '请对当前 KubeTrail 扫描结果做一键智能攻击面分析。',
     '',
@@ -967,7 +1106,7 @@ function buildAiSurfacePrompt(): string {
     '- 发现 privileged/hostPath/capability/runtime socket 时，调用 Skill: pod-escape-surface',
     '- 发现内核版本/SUID/capability 时，调用 Skill: exp-generation 判断 LPE 可行性',
     '- 发现 kubelet/CRI/etcd/nodes-proxy 证据时，调用 Skill: kubelet-runtime-etcd-bypass',
-    '- 其他 Skill 按证据触发，不要无缘无故调用',
+    '- 本轮只启用上述核心 Skills，不泛泛全调',
     '',
     '## 覆盖范围',
     'RBAC 横移、容器逃逸、Linux LPE、凭据/Secret 材料、受限或缺口。只输出有扫描证据支撑的可验证攻击面。',
@@ -1038,7 +1177,7 @@ function parseJsonFromText(text: string): any {
       return JSON.parse(candidate)
     } catch {}
   }
-  throw new Error('AI 返回内容不是可解析 JSON')
+  throw new Error(currentLocale.value === 'en-US' ? 'AI response is not parseable JSON' : 'AI 返回内容不是可解析 JSON')
 }
 
 function formatAiSurfaceChatResult(rawText: string, findings: any[]): string {
@@ -1046,34 +1185,39 @@ function formatAiSurfaceChatResult(rawText: string, findings: any[]): string {
   const clusterAdmin = findings.filter(isClusterAdminFinding)
   const confirmed = findings.filter(isAiConfirmedFinding).filter(f => !isClusterAdminFinding(f))
   const blocked = findings.filter(isNonExploitableFinding)
+  const english = currentLocale.value === 'en-US'
   const lines: string[] = []
   if (processText) lines.push(processText)
   lines.push('')
   if (findings.length) {
     if (clusterAdmin.length) {
-      lines.push('🔴 集群管理员权限：当前身份已获得整个集群管理权限，无需逃逸或提权。')
+      lines.push(english
+        ? '🔴 Cluster admin privileges: the current identity has control of the whole cluster; no escape or privilege escalation is required.'
+        : '🔴 集群管理员权限：当前身份已获得整个集群管理权限，无需逃逸或提权。')
     }
-    lines.push(`结构化同步：已写入 ${findings.length} 个 AI 研判项，其中 ${confirmed.length} 个 AI 确认问题会显示在攻击面列表最前面，${blocked.length} 个标记为不可利用。`)
+    lines.push(english
+      ? `Structured sync: wrote ${findings.length} AI findings. ${confirmed.length} AI-confirmed issues will be shown first in the attack surface list, and ${blocked.length} items are marked not exploitable.`
+      : `结构化同步：已写入 ${findings.length} 个 AI 研判项，其中 ${confirmed.length} 个 AI 确认问题会显示在攻击面列表最前面，${blocked.length} 个标记为不可利用。`)
     if (clusterAdmin.length) {
-      lines.push('集群管理员权限：')
+      lines.push(english ? 'Cluster admin privileges:' : '集群管理员权限：')
       for (const finding of clusterAdmin.slice(0, 3)) {
         lines.push(`- 🔴 ${finding.title || finding.id}`)
       }
     }
     if (confirmed.length) {
-      lines.push('AI 确认问题：')
+      lines.push(english ? 'AI-confirmed issues:' : 'AI 确认问题：')
       for (const finding of confirmed.slice(0, 6)) {
         lines.push(`- ${finding.title || finding.id}`)
       }
     }
     if (blocked.length) {
-      lines.push('不可利用：')
+      lines.push(english ? 'Not exploitable:' : '不可利用：')
       for (const finding of blocked.slice(0, 6)) {
         lines.push(`- 🚫 ${finding.title || finding.id}`)
       }
     }
   } else {
-    lines.push('结构化同步：未解析到新的可验证攻击面。')
+    lines.push(english ? 'Structured sync: no new verifiable attack surface was parsed.' : '结构化同步：未解析到新的可验证攻击面。')
   }
   return lines.join('\n').trim()
 }

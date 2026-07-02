@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { api } from '../api/wails'
 import { useAgentStore } from '../stores/agent'
+import { currentLocale, setLocale, t, type Locale } from '../i18n'
 
 const agentStore = useAgentStore()
 
 const provider = ref<'claude' | 'codex'>('claude')
+const language = ref<Locale>(currentLocale.value)
 const apiKey = ref('')
 const baseUrl = ref('')
 const model = ref('')
@@ -44,6 +46,8 @@ onMounted(async () => {
     const cfg = await api.GetAgentDisplayConfig()
     if (cfg) {
       provider.value = ((cfg as any).provider === 'codex' ? 'codex' : 'claude')
+      language.value = ((cfg as any).language === 'en-US' ? 'en-US' : 'zh-CN')
+      setLocale(language.value)
       apiKey.value = (cfg as any).apiKey || ''
       baseUrl.value = (cfg as any).baseUrl || ''
       model.value = (cfg as any).model || ''
@@ -60,9 +64,14 @@ onMounted(async () => {
   refreshLogs()
 })
 
+watch(language, (value) => {
+  setLocale(value)
+})
+
 function buildConfig(): any {
   return {
     provider: provider.value,
+    language: language.value,
     apiKey: apiKey.value,
     baseUrl: baseUrl.value,
     model: model.value,
@@ -70,13 +79,13 @@ function buildConfig(): any {
     claudePath: claudePath.value,
     codexPath: codexPath.value,
     allowMaterialize: allowMaterialize.value,
-    customEnv: parseObjectText(customEnvText.value.trim(), '自定义环境变量'),
+    customEnv: parseObjectText(customEnvText.value.trim(), t('自定义环境变量')),
     mcpServers: mcpServersForSave(),
   }
 }
 
 function defaultModelForProvider(value: 'claude' | 'codex'): string {
-  return value === 'codex' ? '留空使用 Codex 默认模型' : '留空使用 Claude Code 默认模型'
+  return value === 'codex' ? t('留空使用 Codex 默认模型') : t('留空使用 Claude Code 默认模型')
 }
 
 function onProviderChange(value: 'claude' | 'codex') {
@@ -85,6 +94,8 @@ function onProviderChange(value: 'claude' | 'codex') {
     'gpt-5.4',
     '留空使用 Codex 默认模型',
     '留空使用 Claude Code 默认模型',
+    'Leave empty to use the Codex default model',
+    'Leave empty to use the Claude Code default model',
   ])
   if (!model.value.trim() || oldDefaults.has(model.value.trim())) {
     model.value = ''
@@ -161,10 +172,10 @@ function mcpServersForSave(): any[] {
   if (hasMcpDraftContent(mcpDraft.value)) {
     const server = formToMcpServer(mcpDraft.value)
     if (!server) {
-      throw new Error('请先补全当前 MCP 草稿，或点击清空后再保存')
+      throw new Error(t('请先补全当前 MCP 草稿，或点击清空后再保存'))
     }
     if (!/^[A-Za-z0-9_-]{1,80}$/.test(server.name)) {
-      throw new Error('MCP 名称只能包含字母、数字、-、_')
+      throw new Error(t('MCP 名称只能包含字母、数字、-、_'))
     }
     const form = mcpServerToForm(server)!
     const index = editingMcpIndex.value >= 0
@@ -184,7 +195,7 @@ function parseObjectText(text: string, label: string): Record<string, string> {
   if (!trimmed) return {}
   const value = JSON.parse(trimmed)
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error(`${label} 必须是对象`)
+    throw new Error(`${label} ${t('必须是对象')}`)
   }
   const out: Record<string, string> = {}
   for (const [key, raw] of Object.entries(value)) {
@@ -211,17 +222,17 @@ function upsertMcp() {
   try {
     const server = formToMcpServer(mcpDraft.value)
     if (!server) {
-      ;(window as any).ElMessage?.warning?.('请完整填写 MCP 名称和连接信息')
+      ;(window as any).ElMessage?.warning?.(t('请完整填写 MCP 名称和连接信息'))
       return
     }
     if (!/^[A-Za-z0-9_-]{1,80}$/.test(server.name)) {
-      ;(window as any).ElMessage?.warning?.('MCP 名称只能包含字母、数字、-、_')
+      ;(window as any).ElMessage?.warning?.(t('MCP 名称只能包含字母、数字、-、_'))
       return
     }
     const form = mcpServerToForm(server)!
     const duplicate = mcpServers.value.findIndex((item, index) => item.name === form.name && index !== editingMcpIndex.value)
     if (duplicate >= 0) {
-      ;(window as any).ElMessage?.warning?.('MCP 名称已存在')
+      ;(window as any).ElMessage?.warning?.(t('MCP 名称已存在'))
       return
     }
     if (editingMcpIndex.value >= 0) {
@@ -248,7 +259,7 @@ async function save() {
     const s = await api.GetAgentStatus()
     agentStore.setStatus(s as any)
     await refreshRuntimeInfo()
-    ;(window as any).ElMessage?.success?.('配置已保存，Agent 已应用新配置')
+    ;(window as any).ElMessage?.success?.(t('配置已保存，Agent 已应用新配置'))
   } catch (e: any) {
     ;(window as any).ElMessage?.error?.(String(e))
   } finally {
@@ -287,7 +298,7 @@ async function stopAgent() {
     await api.StopAgent()
     const s = await api.GetAgentStatus()
     agentStore.setStatus(s as any)
-    ;(window as any).ElMessage?.info?.('Agent 已停止')
+    ;(window as any).ElMessage?.info?.(t('Agent 已停止'))
   } catch (e: any) {
     ;(window as any).ElMessage?.error?.(String(e))
   }
@@ -296,7 +307,7 @@ async function stopAgent() {
 async function restartAgent() {
   try {
     await api.RestartAgent()
-    ;(window as any).ElMessage?.success?.('Agent 正在重启...')
+    ;(window as any).ElMessage?.success?.(t('Agent 正在重启...'))
     setTimeout(async () => {
       const s = await api.GetAgentStatus()
       agentStore.setStatus(s as any)
@@ -331,6 +342,18 @@ async function refreshLogs() {
                 ]"
                 @change="onProviderChange"
               />
+            </el-form-item>
+            <el-form-item :label="t('语言')">
+              <div class="field-stack">
+                <el-segmented
+                  v-model="language"
+                  :options="[
+                    { label: t('中文'), value: 'zh-CN' },
+                    { label: t('英文'), value: 'en-US' },
+                  ]"
+                />
+                <div class="field-hint">{{ t('使用英文界面，并让 Agent 默认输出英文') }}</div>
+              </div>
             </el-form-item>
             <el-form-item label="API Key">
               <div class="field-stack">

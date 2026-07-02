@@ -1,5 +1,5 @@
 import { constants, existsSync } from "node:fs";
-import { access, cp, mkdir, readdir, stat } from "node:fs/promises";
+import { access, cp, mkdir, readdir, rm, stat } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +10,7 @@ export const appRoot = existsSync(bundledContextRoot) ? resolve(resolveRuntimeDi
 export const repoRoot = existsSync(bundledContextRoot) ? appRoot : resolve(appRoot, "../..");
 
 export type AgentProvider = "claude" | "codex";
+export type AgentLanguage = "zh-CN" | "en-US";
 
 export type McpServerConfig = {
   type?: "stdio" | "http" | "sse";
@@ -24,6 +25,7 @@ export type McpServerConfig = {
 
 export type AgentRuntimeConfig = {
   provider: AgentProvider;
+  language: AgentLanguage;
   appRoot: string;
   repoRoot: string;
   runtimeDir: string;
@@ -55,6 +57,7 @@ export type AgentRuntimeConfig = {
 
 export type AgentConfigOverrides = {
   provider?: AgentProvider;
+  language?: AgentLanguage;
   apiKey?: string;
   authToken?: string;
   baseUrl?: string;
@@ -83,6 +86,7 @@ export function loadConfig(overrides: AgentConfigOverrides = {}): AgentRuntimeCo
   const authToken = stringOverride(overrides.authToken) ?? providerAuthToken(provider);
   return {
     provider,
+    language: normalizeLanguage(overrides.language ?? firstNonEmpty("KUBETRAIL_AGENT_LANGUAGE")),
     appRoot,
     repoRoot,
     runtimeDir,
@@ -113,7 +117,7 @@ export function loadConfig(overrides: AgentConfigOverrides = {}): AgentRuntimeCo
   };
 }
 
-export async function ensureRuntimeDirs(config: AgentRuntimeConfig): Promise<void> {
+export async function ensureRuntimeDirs(config: AgentRuntimeConfig, enabledSkills?: readonly string[]): Promise<void> {
   await mkdir(config.runtimeDir, { recursive: true });
   await syncBundledAgentContext(config);
   await mkdir(config.claudeConfigDir, { recursive: true });
@@ -125,7 +129,7 @@ export async function ensureRuntimeDirs(config: AgentRuntimeConfig): Promise<voi
     await access(config.pathToCodexExecutable, constants.X_OK);
   }
   if (config.provider === "codex") {
-    await syncCodexSkills(config);
+    await syncCodexSkills(config, enabledSkills);
   }
 }
 
@@ -185,6 +189,7 @@ export function buildClaudeEnv(config: AgentRuntimeConfig, inputPath = ""): Reco
     delete env.KUBETRAIL_RESULT_PATH;
     env.KUBETRAIL_DISABLE_DEFAULT_RESULT = "1";
   }
+  env.KUBETRAIL_AGENT_LANGUAGE = config.language;
 
   env.API_TIMEOUT_MS = config.timeoutMs;
   env.CLAUDE_CODE_MAX_RETRIES = config.maxRetries;
@@ -228,6 +233,7 @@ export function buildCodexEnv(config: AgentRuntimeConfig, inputPath = ""): Recor
     delete env.KUBETRAIL_RESULT_PATH;
     env.KUBETRAIL_DISABLE_DEFAULT_RESULT = "1";
   }
+  env.KUBETRAIL_AGENT_LANGUAGE = config.language;
   if (config.allowMaterializeSensitive) {
     env.KUBETRAIL_AGENT_ALLOW_MATERIALIZE = "1";
   } else {
@@ -295,6 +301,7 @@ function setClaudeModelEnv(env: Record<string, string | undefined>, model?: stri
 export function publicConfig(config: AgentRuntimeConfig): Record<string, unknown> {
   return {
     provider: config.provider,
+    language: config.language,
     defaultInputPath: config.defaultInputPath,
     model: config.model ?? "(sdk default)",
     fallbackModel: config.fallbackModel ?? "",
@@ -395,6 +402,14 @@ function normalizeProvider(value?: string): AgentProvider {
   return "claude";
 }
 
+function normalizeLanguage(value?: string): AgentLanguage {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (normalized === "en" || normalized === "en-us") {
+    return "en-US";
+  }
+  return "zh-CN";
+}
+
 function defaultModel(): string {
   return "";
 }
@@ -420,7 +435,7 @@ function providerBaseUrl(provider: AgentProvider): string | undefined {
   return firstNonEmpty("KUBETRAIL_AGENT_BASE_URL", "ANTHROPIC_BASE_URL");
 }
 
-async function syncCodexSkills(config: AgentRuntimeConfig): Promise<void> {
+async function syncCodexSkills(config: AgentRuntimeConfig, enabledSkills?: readonly string[]): Promise<void> {
   const sourceRoot = resolve(config.appRoot, ".claude", "skills");
   const targetRoot = resolve(config.appRoot, ".agents", "skills");
   let entries;
@@ -430,8 +445,26 @@ async function syncCodexSkills(config: AgentRuntimeConfig): Promise<void> {
     return;
   }
   await mkdir(targetRoot, { recursive: true });
+  const sourceNames = new Set(entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name));
+  const enabledSet = enabledSkills?.length ? new Set(enabledSkills) : undefined;
+  if (enabledSet) {
+    try {
+      const targetEntries = await readdir(targetRoot, { withFileTypes: true });
+      await Promise.all(targetEntries.map(async (entry) => {
+        if (!entry.isDirectory() || !sourceNames.has(entry.name) || enabledSet.has(entry.name)) {
+          return;
+        }
+        await rm(join(targetRoot, entry.name), { recursive: true, force: true });
+      }));
+    } catch {
+      // Stale generated skills should not prevent the agent from starting.
+    }
+  }
   for (const entry of entries) {
     if (!entry.isDirectory() || !validLocalName(entry.name)) {
+      continue;
+    }
+    if (enabledSet && !enabledSet.has(entry.name)) {
       continue;
     }
     const source = join(sourceRoot, entry.name, "SKILL.md");
