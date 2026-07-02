@@ -1,0 +1,13 @@
+KubeTrail
+Copyright 2026 KubeTrail contributors
+
+This product includes third-party open source software.
+
+The PwnKit source variant under
+apps/agent/exp/assets/sources/cve-2021-4034-pwnkit/ is derived from
+ly4k/PwnKit at commit 1923ad7b438ae82eaa2162e15a1e1b810712e54e and is
+licensed under the MIT License. Its upstream license is retained in that
+directory.
+
+Bundled fonts include assets licensed under the SIL Open Font License; see
+apps/desktop/frontend/src/assets/fonts/OFL.txt.

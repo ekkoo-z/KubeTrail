@@ -1,0 +1,7 @@
+title = "KubeTrail Gitleaks configuration"
+
+[allowlist]
+description = "Synthetic security test fixtures"
+paths = [
+  '''internal/collectors/credential_sweep_test\.go''',
+]
