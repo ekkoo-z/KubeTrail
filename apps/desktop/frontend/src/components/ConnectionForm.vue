@@ -32,26 +32,24 @@ async function importFromScan() {
   importing.value = true
   try {
     const r = await api.ImportScanResult() as any
-    if (!r?.document) {
+    const doc = r?.document
+    if (!doc) {
       ElMessage.warning('未解析到有效文档')
       return
     }
-    const facts: any[] = []
-    for (const col of (r.document.collectors || [])) {
-      if (col.facts) facts.push(...col.facts)
-    }
-    let apiServer = ''
+    const facts = scanFacts(doc)
+    let apiServer = stringValue(doc.target?.apiServer)
     let token = ''
-    let ns = ''
+    let ns = stringValue(doc.target?.namespace)
     let caData = ''
     for (const f of facts) {
-      if (f.id?.startsWith('k8s_context') && f.value?.apiServer) {
-        apiServer = f.value.apiServer
+      if (!apiServer && f.id?.startsWith('k8s_context') && f.value?.apiServer) {
+        apiServer = stringValue(f.value.apiServer)
       }
       if (f.id === 'serviceaccount.mounted' && f.value) {
-        if (f.value.token?.content) token = f.value.token.content
-        if (f.value.namespace?.content) ns = f.value.namespace.content
-        if (f.value['ca.crt']?.content) caData = f.value['ca.crt'].content
+        if (!token && f.value.token?.content) token = stringValue(f.value.token.content)
+        if (!ns && f.value.namespace?.content) ns = stringValue(f.value.namespace.content)
+        if (!caData && f.value['ca.crt']?.content) caData = stringValue(f.value['ca.crt'].content)
       }
     }
     if (!apiServer && !token) {
@@ -65,13 +63,30 @@ async function importFromScan() {
     if (caData) form.caData = caData
     form.insecure = !caData
     if (!form.name) form.name = r.source || 'scan-import'
-    ElMessage.success('已从扫描结果提取连接信息')
+    if (!token) {
+      ElMessage.warning('已提取 apiServer；token 不存在或已被脱敏')
+    } else {
+      ElMessage.success('已从扫描结果提取连接信息')
+    }
   } catch (e: any) {
     if (e?.message?.includes('cancel')) return
     ElMessage.error(`导入失败: ${e?.message || e}`)
   } finally {
     importing.value = false
   }
+}
+
+function scanFacts(doc: any): any[] {
+  const facts: any[] = []
+  if (Array.isArray(doc?.facts)) facts.push(...doc.facts)
+  for (const col of (doc?.collectors || [])) {
+    if (Array.isArray(col?.facts)) facts.push(...col.facts)
+  }
+  return facts
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
 }
 
 async function pickKubeconfig() {
