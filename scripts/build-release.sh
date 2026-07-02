@@ -120,7 +120,7 @@ finish_artifact() {
       upx -q -t "$output" >/dev/null
       leak_check "$output"
       after_size="$(wc -c <"$output" | tr -d ' ')"
-      printf "%s  %s  %s -> %s bytes (upx)\n" "$(sha256_file "$output")" "$(basename "$output")" "$before_size" "$after_size" >>"$OUT_DIR/SHA256SUMS"
+      printf "%s  %s\n" "$(sha256_file "$output")" "$(basename "$output")" >>"$OUT_DIR/SHA256SUMS"
       return
     fi
 
@@ -137,7 +137,7 @@ finish_artifact() {
   cp "$raw" "$output"
   leak_check "$output"
   after_size="$(wc -c <"$output" | tr -d ' ')"
-  printf "%s  %s  %s bytes\n" "$(sha256_file "$output")" "$(basename "$output")" "$after_size" >>"$OUT_DIR/SHA256SUMS"
+  printf "%s  %s\n" "$(sha256_file "$output")" "$(basename "$output")" >>"$OUT_DIR/SHA256SUMS"
 }
 
 build_target() {

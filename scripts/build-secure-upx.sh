@@ -155,7 +155,7 @@ build_target() {
 
   leak_check "$output"
   after_size="$(wc -c <"$output" | tr -d ' ')"
-  printf "%s  %s  %s -> %s bytes\n" "$(sha256_file "$output")" "$(basename "$output")" "$before_size" "$after_size" >>"$OUT_DIR/SHA256SUMS"
+  printf "%s  %s\n" "$(sha256_file "$output")" "$(basename "$output")" >>"$OUT_DIR/SHA256SUMS"
 }
 
 main() {
