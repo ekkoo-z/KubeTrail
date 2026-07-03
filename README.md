@@ -19,9 +19,7 @@ KubeTrail 是一个面向 Kubernetes 授权红队评估与防御验证的容器�
 
 ## 使用说明视频和案例
 
-<a href="./kubetrail_readme_demo.mp4">
-  <img src="./kubetrail_readme_demo.png" alt="KubeTrail 使用说明视频和案例" width="100%">
-</a>
+<img src="./kubetrail_readme_demo.gif" alt="KubeTrail 使用说明视频和案例" width="100%">
 
 ## 主要特性
 
