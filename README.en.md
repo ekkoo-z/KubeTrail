@@ -1,6 +1,6 @@
 <h1 align="center">KubeTrail</h1>
 
-<p align="center">English | <a href="./README.md#chinese">中文</a><br></p>
+<p align="center">English | <a href="./README.md">中文</a><br></p>
 
 <div align="center">
 
@@ -16,6 +16,12 @@
 > KubeTrail is intended only for explicitly authorized Kubernetes clusters, namespaces, Pods, or lab environments during security testing, red-team assessment, defensive validation, and security auditing. Unauthorized use may be illegal, and users are solely responsible for their actions.
 
 KubeTrail is an in-pod Kubernetes situational awareness, attack-surface discovery, and AI-assisted offensive/defensive orchestration tool for authorized red-team assessments and defensive validation. It collects local environment, ServiceAccount, Kubernetes API permission, escape-surface, credential trace, and cloud metadata evidence, then writes structured JSON for client-side audit, replay, interactive analysis, EXP validation planning, reporting, and controlled dynamic attack validation.
+
+## Usage Video and Case Study
+
+<video src="./kubetrail_readme_demo.mp4" controls width="100%" muted>
+  Your browser does not support video playback. Open kubetrail_readme_demo.mp4 directly to view it.
+</video>
 
 ## Key Features
 

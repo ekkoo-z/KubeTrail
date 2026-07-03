@@ -1,8 +1,6 @@
-<a id="chinese"></a>
-
 <h1 align="center">KubeTrail（云迹）</h1>
 
-<p align="center">中文 | <a href="#english">English</a><br></p>
+<p align="center">中文 | <a href="./README.en.md">English</a><br></p>
 
 <div align="center">
 
@@ -18,6 +16,12 @@
 > KubeTrail 仅用于已明确授权的 Kubernetes 集群、命名空间、Pod 或实验环境中的安全测试、红队评估、防御验证和安全审计。任何未授权使用都可能违法，使用者需自行承担相应责任。
 
 KubeTrail 是一个面向 Kubernetes 授权红队评估与防御验证的容器内态势感知、攻击面发现和 AI 辅助攻防编排工具。它从 Pod 内或受控测试环境收集本地环境、ServiceAccount、Kubernetes API 权限、逃逸面、凭据痕迹和云元数据等证据，输出结构化 JSON，供客户端后续审计、复盘、交互式分析、EXP 验证计划、报告生成以及受控动态攻击验证使用。
+
+## Usage Video
+
+<video src="./kubetrail_readme_demo.mp4" controls width="100%" muted>
+  你的浏览器不支持视频播放，请直接打开 kubetrail_readme_demo.mp4 查看。
+</video>
 
 ## 主要特性
 
@@ -299,107 +303,3 @@ KubeTrail 的 server 负责采集事实和生成启发式 findings；Agent、EXP
 ## 许可证
 
 MIT License
-
-### Follow the trail
-
-<a id="english"></a>
-
----
-
-# KubeTrail
-
-<p align="center">English | <a href="#chinese">中文</a><br></p>
-
-> [!WARNING]
-> KubeTrail is intended only for explicitly authorized Kubernetes clusters, namespaces, Pods, or lab environments during security testing, red-team assessment, defensive validation, and security auditing. Unauthorized use may be illegal, and users are solely responsible for their actions.
-
-KubeTrail is an in-pod Kubernetes situational awareness, attack-surface discovery, and AI-assisted offensive/defensive orchestration tool for authorized red-team assessments and defensive validation. It collects local environment, ServiceAccount, Kubernetes API permission, escape-surface, credential trace, and cloud metadata evidence, then writes structured JSON for client-side audit, replay, interactive analysis, EXP validation planning, reporting, and controlled dynamic attack validation.
-
-## Key Features
-
-- **Native in-pod collection**: uses the in-cluster ServiceAccount to access the Kubernetes API directly, without `kubectl` or extra operations tooling.
-- **Tiered safety modes**: `safe` focuses on local read-only and Kubernetes API read-only evidence collection; `full` enables active validation such as network probes, Admission dry-run, and syscall probes.
-- **Attack-surface evidence aggregation**: collects ServiceAccount, RBAC, Pod security context, runtime socket, hostPath, cgroup, `/proc`, `/sys`, LPE, credential trace, and cloud metadata signals.
-- **Sensitive data egress protection**: supports `raw`, `redact`, and `metadata` sensitive-data strategies; Agent uses references for sensitive evidence by default to reduce the risk of sending tokens, keys, or credential material to LLMs or external services.
-- **AI dynamic attack orchestration**: Agent supports Claude/Codex providers and can combine collected facts, attack-surface skills, EXP Forge, C2 MCP, and live feedback to adjust validation paths inside the authorized scope.
-- **Local post-exploitation workbench**: the desktop app manages kubeconfigs, Pod/Node interactions, port forwarding, file access, and C2 MCP sessions for evidence review, permission consolidation, and follow-on operation orchestration.
-- **Fast persistence workflows**: includes ServiceAccount/RBAC, CSR, sidecar patch, pull secret, CronJob/Deployment template notes and cleanup guidance for rapid generation, validation, and replay of persistence paths.
-
-Note: C2 orchestration integrates with external operator-owned C2 infrastructure through MCP. This repository keeps only the integration entry points and invocation constraints; the C2 server is not open sourced.
-
-## Quick Start
-
-Requirements:
-
-- Go 1.26 or newer.
-- Node.js 18+ for `apps/agent` and the desktop frontend.
-- Wails for developing or building `apps/desktop`.
-- Optional local `claude` or `codex` CLI for desktop Agent SDK runtime integration.
-
-Build release artifacts:
-
-```bash
-./scripts/build-release.sh
-```
-
-Package the desktop app and Agent runtime assets:
-
-```bash
-./build.sh
-```
-
-## Server Options
-
-| Option | Default | Purpose |
-| --- | --- | --- |
-| `--mode` / `-m` | `safe` | Collection mode: `safe` or `full`. |
-| `--output` / `-o` | `dbus.json` | Main JSON output path; `-` writes to stdout. |
-| `--pretty` / `-p` | `false` | Pretty-print JSON. |
-| `--timeout` / `-t` | `60s` | Overall collection timeout. Timed-out runs still output collected partial facts and errors. |
-| `--sensitive` / `-v` | `raw` | Sensitive fact handling: `raw`, `redact`, or `metadata`. |
-| `--rbac-mode` / `-r` | `focused` | RBAC audit depth: `focused` checks high-value paths; `full` runs the full matrix and wildcard expansion. |
-| `--scan` / `-s` | `all` | Limit collection categories, comma-separated, for example `-s lpe,rbac`. |
-| `--credential-sweep` / `-c` | `true` | Common credential file sweep; use `-c=false` to disable. |
-| `--secretoutput path` / `-secret path` | empty | Write a separate ServiceAccount token audit JSON with raw visible legacy token Secrets and per-token permission checks. |
-| `--kubeconfig` / `-k` | empty | Use local kubeconfig; empty uses in-cluster ServiceAccount. |
-| `--max-items` / `-n` | `100` | Maximum objects per Kubernetes list request. |
-
-## Common Red-Team Workflow
-
-The workflow assumes an authorized exercise, assessment, or lab environment. Start with `safe` mode for baseline evidence and the common RBAC high-value matrix:
-
-```bash
-./kubetrail-server -m safe -o dbus.json
-```
-
-Run deeper RBAC checks when needed:
-
-```bash
-./kubetrail-server -m safe -s rbac -r full -o rbac.json
-```
-
-Focus on local LPE and container escape signals:
-
-```bash
-./kubetrail-server -m safe -s lpe,escape -o local-attack-surface.json
-```
-
-Run active validation only when the scope allows observable requests:
-
-```bash
-./kubetrail-server -m full -r focused -o full.json
-```
-
-Export visible legacy ServiceAccount token Secrets only when explicitly authorized:
-
-```bash
-./kubetrail-server -m safe -secret secret-audit.json -r full -o dbus.json
-```
-
-## Desktop App
-
-`apps/desktop` is an experimental Wails desktop app with a Go backend and Vue + Element Plus frontend. It supports cluster connection management, Pod/Node inspection, Pod logs and terminals, Node helper shells, port forwarding, scan result import, Agent sessions, EXP templates, report export, and persistence/shadow-kubeconfig workflows.
-
-The desktop app does not bundle the `claude` or `codex` CLI. Ensure the corresponding CLI is on `PATH`, or set `KUBETRAIL_AGENT_PATH_TO_CLAUDE` / `KUBETRAIL_AGENT_PATH_TO_CODEX`.
-
-For the complete English documentation, see [README.en.md](./README.en.md).
