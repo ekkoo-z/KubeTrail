@@ -124,17 +124,13 @@ release 脚本会运行 `go test ./...`，使用 `-trimpath`、`-buildvcs=false`
    ./kubetrail-server -m safe -secret secret-audit.json -r full -o dbus.json
    ```
 
-6. Agent 辅助分析和 EXP 计划
+6. Agent 辅助分析
 
    把 `dbus.json` 交给 `apps/agent`，让 Agent 基于事实列出攻击面、证据、风险排序和验证模板。
 
-   生成 EXP bundle 前，应先确认模板参数、目标命名空间、ServiceAccount、镜像和清理命令都符合演练授权。
-
 7. 桌面端联动
 
-   桌面端适合在评估过程中持续浏览资源、导入扫描结果、查看 Pod/Node 上下文、管理 Agent 对话和生成验证材料。
-
-
+   桌面端适合在后渗透过程中导入扫描结果结合c2mcp服务，动态发起逃逸验证、进入 Pod/Node 执行命令、管理 Agent 对话
    对 Pod terminal、Node terminal、端口转发、持久化资源创建和 shadow kubeconfig 等交互功能，应按演练规则单独确认授权，因为这些动作可能改变集群状态或留下审计记录。
 
 ## Kubernetes API 行为
@@ -146,7 +142,7 @@ KubeTrail 不调用 `kubectl`。Pod 内运行时，它通过当前容器挂载�
 - 只能读取当前命名空间时，输出会聚焦当前 namespace 和当前工作负载。
 - 具备跨命名空间读取权限时，会收集更完整的资源和权限证据。
 - API 请求被拒绝时，会记录结构化错误并继续输出已采集事实。
-- `nodes/proxy` 等高风险权限只作为授权信号记录；直接主动探测属于 `full` 或客户端 EXP 验证计划。
+- `nodes/proxy` 等高风险权限只作为授权信号记录；直接主动探测属于 `full`
 
 ## 敏感数据处理
 
@@ -154,23 +150,16 @@ KubeTrail 不调用 `kubectl`。Pod 内运行时，它通过当前容器挂载�
 
 结果需要离开操作者工作站或进入报告流程时，建议使用：
 
-```bash
-./kubetrail-server --mode safe --sensitive redact --output dbus.json
-```
-`credential_sweep` 默认开启，可能采集 Kubernetes、云厂商、镜像仓库、CI/CD 和 workload identity 相关凭据文件。`--secretoutput` 是显式 opt-in，会导出原始 token。
-
 ## 桌面端
 
-`apps/desktop` 是实验性 Wails 桌面端，后端为 Go，前端为 Vue + Element Plus。当前能力包括：
+`apps/desktop` 是K8S后渗透 Wails 桌面端，后端为 Go，前端为 Vue + Element Plus。当前能力包括：
 
-- 保存和测试集群连接。
-- 浏览 namespace、Pod、Node 和相关资源。
+- 连接目标集群，浏览 namespace、Pod、Node 和相关资源
 - 查看 Pod 日志，进入 Pod terminal，上传/下载/读取/删除 Pod 文件。
 - 通过 helper Pod、chroot 或 nsenter 进入 Node terminal，并浏览 Node 文件。
 - 端口转发和预设 recon。
-- 导入或运行 KubeTrail 扫描结果。
-- 管理 Agent 配置、技能、聊天会话、EXP 模板和报告导出。
-- 辅助生成持久化资源、ServiceAccount token 和 shadow kubeconfig。
+- 管理 Agent 配置、skills、mcp、聊天会话、EXP 模板和报告导出。
+- 权限维持辅助生成持久化资源、ServiceAccount token 和 shadow kubeconfig。
 
 Node Shell helper Pod 默认使用：
 

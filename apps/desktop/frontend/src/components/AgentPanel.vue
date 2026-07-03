@@ -45,6 +45,7 @@ let lastCompositionEnd = 0
 type AgentTraceEntry = {
   key: string
   text: string
+  kind: 'init' | 'tool' | 'reasoning' | 'result' | 'runtime'
 }
 
 type AgentTraceState = {
@@ -435,13 +436,13 @@ async function sendMessage() {
           tools: Array.isArray(event.tools) ? event.tools : [],
           skills: Array.isArray(event.skills) ? event.skills : [],
         })
-        upsertTraceEntry(trace, 'init', formatInitTrace(event))
+        upsertTraceEntry(trace, 'init', formatInitTrace(event), 'init')
         scrollToBottom()
       } else if (event.type === 'tool_use') {
-        upsertTraceEntry(trace, traceKeyForTool(event), formatToolUseLabel(event.toolName, event.skillName, event.toolInput))
+        upsertTraceEntry(trace, traceKeyForTool(event), formatToolUseLabel(event.toolName, event.skillName, event.toolInput), 'tool')
         scrollToBottom()
       } else if (event.type === 'reasoning') {
-        upsertTraceEntry(trace, reasoningTraceKey(event), formatReasoningTrace(event))
+        upsertTraceEntry(trace, reasoningTraceKey(event), formatReasoningTrace(event), 'reasoning')
         scrollToBottom()
       } else if (event.type === 'assistant' && event.text) {
         if (!isHistoricalReplayText(event.text, historicalAssistantFingerprints)) {
@@ -686,17 +687,17 @@ async function runAiSurfaceAnalysis() {
         aiAnalysisStatus.value = currentLocale.value === 'en-US'
           ? `Agent analyzing · ${modelLabel} · ${skillsLoaded} skills loaded`
           : `Agent 分析中 · ${modelLabel} · ${skillsLoaded} Skills 已加载`
-        upsertTraceEntry(trace, 'init', formatInitTrace(event))
+        upsertTraceEntry(trace, 'init', formatInitTrace(event), 'init')
         scrollToBottom()
       } else if (event.type === 'tool_use') {
         const label = formatToolUseLabel(event.toolName, event.skillName, event.toolInput)
         aiAnalysisStatus.value = label
-        upsertTraceEntry(trace, traceKeyForTool(event), label)
+        upsertTraceEntry(trace, traceKeyForTool(event), label, 'tool')
         scrollToBottom()
       } else if (event.type === 'reasoning') {
         const label = formatReasoningTrace(event)
         aiAnalysisStatus.value = label
-        upsertTraceEntry(trace, reasoningTraceKey(event), label)
+        upsertTraceEntry(trace, reasoningTraceKey(event), label, 'reasoning')
         scrollToBottom()
       } else if (event.type === 'assistant' && event.text) {
         aiAnalysisStatus.value = currentLocale.value === 'en-US' ? 'Agent is generating analysis results...' : 'Agent 正在生成分析结果...'
@@ -783,14 +784,15 @@ function createAgentTraceState(targetMessageIndex = -1): AgentTraceState {
   }
 }
 
-function upsertTraceEntry(trace: AgentTraceState, key: string, text: string) {
+function upsertTraceEntry(trace: AgentTraceState, key: string, text: string, kind: AgentTraceEntry['kind'] = 'runtime') {
   const clean = text.trim()
   if (!clean) return
   const existing = trace.entries.find(entry => entry.key === key)
   if (existing) {
     existing.text = clean
+    existing.kind = kind
   } else {
-    trace.entries.push({ key, text: clean })
+    trace.entries.push({ key, text: clean, kind })
   }
   renderAgentTrace(trace)
 }
@@ -801,17 +803,20 @@ function setTraceAnswer(trace: AgentTraceState, text: string) {
 }
 
 function renderAgentTrace(trace: AgentTraceState) {
-  const sections: string[] = []
+  // 结构化标记语法,由 renderContent 解析成带分类样式的 HTML。
+  // 每条 §T:<kind>§<text> 占一行;最终回答用 §A§ 前缀。
+  const lines: string[] = []
   if (trace.entries.length) {
-    sections.push([
-      `**${trace.traceTitle}**`,
-      ...trace.entries.map(entry => `- ${entry.text}`),
-    ].join('\n'))
+    lines.push(`§H§${trace.traceTitle}`)
+    for (const entry of trace.entries) {
+      lines.push(`§T:${entry.kind}§${entry.text}`)
+    }
   }
   if (trace.answer) {
-    sections.push([`**${trace.answerTitle}**`, trace.answer].join('\n'))
+    lines.push(`§A§${trace.answerTitle}`)
+    lines.push(trace.answer)
   }
-  const content = sections.join('\n\n').trim()
+  const content = lines.join('\n').trim()
   if (!content) return
   if (!agentStore.setMessageContentAt(trace.targetMessageIndex, 'assistant', content)) {
     agentStore.setLastAssistantContent(content)
@@ -836,7 +841,7 @@ function addHistoricalAssistantFingerprint(fingerprints: Set<string>, value: unk
 function extractFinalAnswerSection(content: unknown): string {
   const text = normalizeTraceText(content)
   if (!text) return ''
-  const marker = /\*\*(?:最终回答|Final Answer)\*\*/gi
+  const marker = /§A§[^\n]*/g
   let last: RegExpExecArray | null = null
   for (let match = marker.exec(text); match; match = marker.exec(text)) {
     last = match
@@ -906,9 +911,13 @@ function formatReasoningTrace(event: any): string {
     : text
 }
 
+// 思考文本类 reasoning 每次都是新内容,用自增 seq 让 key 唯一,避免 upsert 覆盖上一次思考。
+// thinking_tokens 是 token 计数进度,保留覆盖语义(实时刷新同一条)。
+let reasoningTextSeq = 0
 function reasoningTraceKey(event: any): string {
   if (event?.subtype === 'thinking_tokens') return 'reasoning:thinking_tokens'
-  return `reasoning:${String(event?.provider || 'agent')}:${String(event?.subtype || 'summary')}`
+  reasoningTextSeq += 1
+  return `reasoning:${String(event?.provider || 'agent')}:${String(event?.subtype || 'summary')}:${reasoningTextSeq}`
 }
 
 function formatRuntimeTrace(event: any): string {
@@ -1293,7 +1302,7 @@ function buildAiSurfacePrompt(): string {
       'Cover RBAC lateral movement, container escape, Linux LPE, credential/Secret material, and blocked or gap items. Output only verifiable attack surfaces supported by scan evidence.',
       'Do not execute side-effecting actions and do not generate real attack execution steps; output only validation plans and evidence.',
       '',
-      'Existing base graph summary, used to avoid repeating identical findings:',
+      'Existing base graph summary for reference (these are engine-inferred findings already shown under "Engine findings"; they do NOT suppress your own verdicts):',
       graphSummary,
       '',
       '## Output requirements',
@@ -1327,7 +1336,8 @@ function buildAiSurfacePrompt(): string {
       '- Blocked items still require evidence and nextSteps. nextSteps should explain why the path is not exploitable or what facts are needed before reassessment.',
       '- If there is no evidence, do not output the finding.',
       '- Output at most 12 findings, sorted by priority. The cluster admin finding must be first when present.',
-      '- If there is no new parseable attack surface, output {"findings":[]}.',
+      '- IMPORTANT: your output is the AI verdict list, shown separately under "AI findings". It overlaps with engine findings intentionally — engine and AI results corroborate each other, neither replaces the other. You MUST output a finding for every attack surface you verdicted (confirmed exploitable, probable, or blocked), EVEN IF its id already appears in the base graph summary above. Do NOT drop a finding just because the engine already lists it; instead give your own confidence, nextSteps and blocked judgement.',
+      '- Output {"findings":[]} ONLY when the scan result genuinely contains no verdictable attack surface at all (nothing confirmed, nothing probable, nothing blocked). As long as you have any confirmed / probable / blocked judgement, never output an empty array.',
     ].join('\n')
   }
   return [
@@ -1348,7 +1358,7 @@ function buildAiSurfacePrompt(): string {
     'RBAC 横移、容器逃逸、Linux LPE、凭据/Secret 材料、受限或缺口。只输出有扫描证据支撑的可验证攻击面。',
     '不要执行任何有副作用动作，不要生成真实攻击执行步骤；只输出验证计划和证据。',
     '',
-    '已有基础图谱摘要如下，用于避免重复输出完全相同的 finding：',
+    '已有基础图谱摘要仅供参考（这些是引擎推断结果，已显示在「引擎推断」中，不会替代你的研判）:',
     graphSummary,
     '',
     '## 输出要求',
@@ -1382,7 +1392,8 @@ function buildAiSurfacePrompt(): string {
     '- blocked 项仍需要 evidence 和 nextSteps，nextSteps 应说明不可利用原因或需要补采后才能重新判断的事实。',
     '- 如果没有证据，不要输出该 finding。',
     '- 最多输出 12 条，按优先级排序（集群管理员 finding 必须是第一条）。',
-    '- 如果没有新增可解析攻击面，输出 {“findings”:[]}。',
+    '- 重要：你的输出就是 AI 研判列表，会单独显示在「AI 分析结果」中。它与引擎推断有意重叠——引擎与 AI 互为印证，互不替代。对于每一个你研判过的攻击面（确认可利用 / probable / 不可利用），都必须输出对应的 finding，即使该 id 已经出现在上面的基础图谱摘要中也不要省略；不要因为引擎已经列出就丢弃，而要给出你自己的 confidence、nextSteps 和 blocked 判定。',
+    '- 仅当扫描结果确实完全没有任何可研判攻击面（既没有可确认、没有 probable、也没有需要标记为 blocked 的项）时，才输出 {“findings”:[]}。只要你有任何 confirmed / probable / blocked 判断，就绝不能输出空数组。',
   ].join('\n')
 }
 
@@ -2198,15 +2209,73 @@ function handleCompositionEnd() {
 </template>
 
 <script lang="ts">
-function renderContent(content: string): string {
-  if (!content) return ''
-  return content
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/\n/g, '<br>')
+// trace 标记语法 (renderAgentTrace 生成):
+//   §H§<标题>          运行摘要/分析过程标题
+//   §T:<kind>§<文本>   单条 trace 条目,kind 决定颜色/图标
+//   §A§<标题>          最终回答标题
+//   <其它>             最终回答正文(普通 markdown-ish 文本)
+// 非标记文本走原有简易 markdown 渲染。
+const TRACE_KIND_META: Record<'init' | 'tool' | 'reasoning' | 'result' | 'runtime', { icon: string; cls: string }> = {
+  init: { icon: '⚙', cls: 'tr-init' },
+  tool: { icon: '🔧', cls: 'tr-tool' },
+  reasoning: { icon: '💭', cls: 'tr-reasoning' },
+  result: { icon: '✓', cls: 'tr-result' },
+  runtime: { icon: '·', cls: 'tr-runtime' },
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+function renderInlineMarkdown(s: string): string {
+  return escapeHtml(s)
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+}
+
+function renderContent(content: string): string {
+  if (!content) return ''
+  if (!content.includes('§')) {
+    return content
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\n/g, '<br>')
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+  }
+  const lines = content.split('\n')
+  const out: string[] = []
+  let inAnswer = false
+  let answerBuf: string[] = []
+  const flushAnswer = () => {
+    if (answerBuf.length) {
+      out.push(`<div class="tr-answer-text">${answerBuf.map(renderInlineMarkdown).join('<br>')}</div>`)
+      answerBuf = []
+    }
+  }
+  for (const line of lines) {
+    if (line.startsWith('§H§')) {
+      out.push(`<div class="tr-section-title">${escapeHtml(line.slice('§H§'.length))}</div>`)
+    } else if (line.startsWith('§A§')) {
+      flushAnswer()
+      out.push(`<div class="tr-section-title tr-answer-title">${escapeHtml(line.slice('§A§'.length))}</div>`)
+      inAnswer = true
+    } else if (line.startsWith('§T:')) {
+      const m = /^§T:([a-z]+)§(.*)$/.exec(line)
+      if (m) {
+        const kind = (TRACE_KIND_META[m[1] as 'init' | 'tool' | 'reasoning' | 'result' | 'runtime'] ?? TRACE_KIND_META.runtime)
+        out.push(`<div class="tr-row ${kind.cls}"><span class="tr-icon">${kind.icon}</span><span class="tr-text">${renderInlineMarkdown(m[2])}</span></div>`)
+      }
+    } else if (line.trim() === '') {
+      if (inAnswer) answerBuf.push('')
+    } else {
+      if (inAnswer) answerBuf.push(line)
+      else out.push(`<div class="tr-plain">${renderInlineMarkdown(line)}</div>`)
+    }
+  }
+  flushAnswer()
+  return out.join('')
 }
 </script>
 
@@ -2326,6 +2395,46 @@ function renderContent(content: string): string {
 .msg-role { font-size: 10px; font-weight: 600; margin-bottom: 2px; opacity: 0.7; }
 .msg-content { font-size: 13px; line-height: 1.5; word-break: break-word; }
 .msg-content :deep(code) { font-family: var(--kg-font-mono); font-size: 12px; background: rgba(0,0,0,0.2); padding: 1px 4px; border-radius: 3px; }
+
+/* —— trace 结构化渲染:工具/思考/结果分行带色,避免全白混杂 —— */
+.msg-content :deep(.tr-section-title) {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  opacity: 0.85;
+  margin: 10px 0 4px 0;
+  padding-bottom: 3px;
+  border-bottom: 1px solid var(--kg-border-soft);
+  color: var(--kg-text-muted);
+}
+.msg-content :deep(.tr-section-title:first-child) { margin-top: 0; }
+.msg-content :deep(.tr-answer-title) { color: var(--kg-accent); border-bottom-color: var(--kg-accent-ring); }
+.msg-content :deep(.tr-row) {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 4px 8px;
+  margin: 2px 0;
+  border-left: 2px solid var(--kg-border);
+  border-radius: 0 4px 4px 0;
+  font-size: 13px;
+  line-height: 1.5;
+  background: var(--kg-surface-2);
+}
+.msg-content :deep(.tr-icon) { flex: 0 0 auto; width: 16px; text-align: center; opacity: 0.9; }
+.msg-content :deep(.tr-text) { flex: 1 1 auto; word-break: break-word; }
+.msg-content :deep(.tr-text :deep(code)) { font-size: 12px; }
+.msg-content :deep(.tr-init)      { border-left-color: var(--kg-info);    color: var(--kg-info); }
+.msg-content :deep(.tr-init) .tr-text      { color: var(--kg-text); }
+.msg-content :deep(.tr-tool)      { border-left-color: #A78BFA;           color: #C4B5FD; }
+.msg-content :deep(.tr-tool) .tr-text      { color: var(--kg-text); }
+.msg-content :deep(.tr-reasoning) { border-left-color: var(--kg-warn);    background: var(--kg-warn-soft); }
+.msg-content :deep(.tr-reasoning) .tr-text { color: var(--kg-text); opacity: 0.92; font-style: italic; }
+.msg-content :deep(.tr-result)    { border-left-color: var(--kg-accent); color: var(--kg-accent); }
+.msg-content :deep(.tr-result) .tr-text    { color: var(--kg-text); }
+.msg-content :deep(.tr-runtime)   { border-left-color: var(--kg-border); opacity: 0.7; font-size: 12px; }
+.msg-content :deep(.tr-plain)     { margin: 2px 0; }
+.msg-content :deep(.tr-answer-text) { margin-top: 4px; font-size: 13px; line-height: 1.6; }
 .typing-indicator { display: flex; gap: 4px; padding: 8px 12px; align-self: flex-start; }
 .typing-indicator span { width: 6px; height: 6px; border-radius: 50%; background: var(--kg-text-muted); animation: typing 1.2s infinite; }
 .typing-indicator span:nth-child(2) { animation-delay: 0.2s; }

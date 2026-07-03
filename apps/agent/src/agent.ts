@@ -73,6 +73,13 @@ async function runKubeTrailClaudeAgent(config: AgentRuntimeConfig, params: RunAg
 
   try {
     for await (const message of query({ prompt, options })) {
+      // Emit thinking blocks as reasoning events before text/tool events so the UI
+      // can render the model's reasoning, not just the token-count summary.
+      if (message.type === "assistant") {
+        for (const t of extractAssistantThinking(message.message.content)) {
+          params.onEvent?.({ type: "reasoning", provider: "claude", subtype: "thinking_block", text: t });
+        }
+      }
       // Emit tool_use events before the main event so UI can show tool activity
       if (message.type === "assistant") {
         for (const tool of extractToolUses(message.message.content)) {
@@ -207,13 +214,11 @@ function buildPrompt(message: string, inputPath: string, isResume: boolean, lang
   const responseRules = english
     ? [
         "Answer in English throughout unless the user explicitly requests another language.",
-        "Do not output process narration, tool preambles, or filler such as `Let me read...`, `Now I have...`, or `Let me generate...`.",
-        "Only output user-facing conclusions, evidence, attack paths, next actions, and necessary gap statements.",
+        "Keep your internal thinking/reasoning and output it in the same language as your answer; do not omit or replace it.",
       ]
     : [
         "全程使用简体中文回答，除非用户明确要求其他语言。",
-        "不要输出过程性自述、工具调用前自言自语或英文 filler，例如 `Let me read...`、`Now I have...`、`Let me generate...`。",
-        "只输出面向用户的结论、证据、攻击路径、下一步行动和必要的缺口说明。",
+        "保留内部思考/推理过程，并与回答使用同一种语言（中文回答时思考也用中文）；不要省略或替换思考内容。",
       ];
   const userQuestionLabel = english ? "User question" : "用户问题";
   if (isResume) {
@@ -235,14 +240,14 @@ function buildPrompt(message: string, inputPath: string, isResume: boolean, lang
   }
   const inputRules = english
     ? [
-        `First call kubetrail_load_result to load: ${inputPath}`,
-        "Then answer the user question based on the loaded evidence.",
+        `KubeTrail scan result path (load it with kubetrail_load_result when you need target evidence): ${inputPath}`,
+        "Answer the user question based on the loaded evidence; explain what you are about to do and why before each step.",
         "Do not invent factIds, permissions, Pods, Nodes, Namespaces, cloud accounts, or sensitiveRefs.",
         "If exploit direction is needed, output only plans and template selections; do not execute side-effecting actions.",
       ]
     : [
-        `先调用 kubetrail_load_result 加载: ${inputPath}`,
-        "然后基于已加载证据回答用户问题。",
+        `KubeTrail 扫描结果路径(需要目标证据时用 kubetrail_load_result 加载): ${inputPath}`,
+        "基于已加载证据回答用户问题;每一步行动前说明你接下来要做什么、为什么。",
         "不要编造 factId、权限、Pod、Node、Namespace、云账号或 sensitiveRef。",
         "如果需要生成利用方向，只输出计划和模板选择，不执行有副作用动作。",
       ];
@@ -371,6 +376,7 @@ async function runKubeTrailCodexAgent(config: AgentRuntimeConfig, params: RunAge
     sandboxMode: "read-only" as const,
     workingDirectory: config.appRoot,
     skipGitRepoCheck: true,
+    modelReasoningEffort: config.codexReasoningEffort,
     networkAccessEnabled: false,
     webSearchMode: "disabled" as const,
     approvalPolicy: "never" as const,
@@ -588,6 +594,22 @@ function buildCodexToolList(config: AgentRuntimeConfig): string[] {
     names.add(`mcp__${name}__*`);
   }
   return [...names];
+}
+
+function extractAssistantThinking(content: unknown): string[] {
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  const out: string[] = [];
+  for (const block of content) {
+    if (block && typeof block === "object" && "type" in block && (block as { type?: string }).type === "thinking") {
+      const text = (block as { thinking?: unknown }).thinking;
+      if (typeof text === "string" && text.trim()) {
+        out.push(text);
+      }
+    }
+  }
+  return out;
 }
 
 function extractAssistantText(content: unknown): string {

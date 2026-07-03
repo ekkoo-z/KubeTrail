@@ -52,6 +52,7 @@ export type AgentRuntimeConfig = {
   allowMaterializeSensitive: boolean;
   maxTurns: number;
   maxBudgetUsd?: number;
+  codexReasoningEffort: "minimal" | "low" | "medium" | "high" | "xhigh";
   mcpServers: Record<string, McpServerConfig>;
 };
 
@@ -74,6 +75,7 @@ export type AgentConfigOverrides = {
   allowMaterializeSensitive?: boolean;
   maxTurns?: number;
   maxBudgetUsd?: number;
+  codexReasoningEffort?: AgentRuntimeConfig["codexReasoningEffort"];
   mcpServers?: Record<string, McpServerConfig>;
 };
 
@@ -114,6 +116,9 @@ export function loadConfig(overrides: AgentConfigOverrides = {}): AgentRuntimeCo
     allowMaterializeSensitive: overrides.allowMaterializeSensitive ?? boolEnv("KUBETRAIL_AGENT_ALLOW_MATERIALIZE", false),
     maxTurns: numberOverride(overrides.maxTurns) ?? numberEnv("KUBETRAIL_AGENT_MAX_TURNS", 200),
     maxBudgetUsd: numberOverride(overrides.maxBudgetUsd) ?? optionalNumberEnv("KUBETRAIL_AGENT_MAX_BUDGET_USD"),
+    codexReasoningEffort: parseCodexReasoningEffort(
+      stringOverride(overrides.codexReasoningEffort) ?? firstNonEmpty("KUBETRAIL_AGENT_CODEX_REASONING_EFFORT") ?? "high",
+    ),
     mcpServers: overrides.mcpServers ?? parseMcpServers(firstNonEmpty("KUBETRAIL_AGENT_MCP_SERVERS")),
   };
 }
@@ -541,6 +546,15 @@ function optionalNumberEnv(name: string): number | undefined {
   }
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+const CODEX_REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"] as const;
+
+function parseCodexReasoningEffort(value: string): AgentRuntimeConfig["codexReasoningEffort"] {
+  const v = value.trim().toLowerCase();
+  return (CODEX_REASONING_EFFORTS as readonly string[]).includes(v)
+    ? (v as AgentRuntimeConfig["codexReasoningEffort"])
+    : "high";
 }
 
 function parseMcpServers(value: string | undefined): Record<string, McpServerConfig> {

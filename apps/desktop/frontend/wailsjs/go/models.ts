@@ -1,5 +1,47 @@
 export namespace agentmgr {
 
+	export class AgentProviderConfig {
+	    apiKey?: string;
+	    baseUrl?: string;
+	    model?: string;
+	    allowMaterialize: boolean;
+	    proxy?: string;
+	    customEnv?: Record<string, string>;
+	    mcpServers?: MCPServerConfig[];
+
+	    static createFrom(source: any = {}) {
+	        return new AgentProviderConfig(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.apiKey = source["apiKey"];
+	        this.baseUrl = source["baseUrl"];
+	        this.model = source["model"];
+	        this.allowMaterialize = source["allowMaterialize"];
+	        this.proxy = source["proxy"];
+	        this.customEnv = source["customEnv"];
+	        this.mcpServers = this.convertValues(source["mcpServers"], MCPServerConfig);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class MCPServerConfig {
 	    name: string;
 	    type: string;
@@ -40,7 +82,7 @@ export namespace agentmgr {
 	    customEnv?: Record<string, string>;
 	    mcpServers?: MCPServerConfig[];
 	    providerConfigs?: Record<string, AgentProviderConfig>;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new AgentConfig(source);
 	    }
@@ -59,48 +101,6 @@ export namespace agentmgr {
 	        this.mcpServers = this.convertValues(source["mcpServers"], MCPServerConfig);
 	        this.providerConfigs = this.convertValues(source["providerConfigs"], AgentProviderConfig, true);
 	    }
-
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
-	export class AgentProviderConfig {
-	    apiKey?: string;
-	    baseUrl?: string;
-	    model?: string;
-	    allowMaterialize: boolean;
-	    proxy?: string;
-	    customEnv?: Record<string, string>;
-	    mcpServers?: MCPServerConfig[];
-
-	    static createFrom(source: any = {}) {
-	        return new AgentProviderConfig(source);
-	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.apiKey = source["apiKey"];
-	        this.baseUrl = source["baseUrl"];
-	        this.model = source["model"];
-	        this.allowMaterialize = source["allowMaterialize"];
-	        this.proxy = source["proxy"];
-	        this.customEnv = source["customEnv"];
-	        this.mcpServers = this.convertValues(source["mcpServers"], MCPServerConfig);
-	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
@@ -120,6 +120,7 @@ export namespace agentmgr {
 		    return a;
 		}
 	}
+
 	export class AgentRuntimeInfo {
 	    nodePath?: string;
 	    nodeError?: string;
@@ -225,7 +226,6 @@ export namespace agentmgr {
 	}
 
 }
-
 export namespace kube {
 	
 	export class ClusterExtensionInfo {
