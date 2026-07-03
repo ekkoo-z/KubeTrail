@@ -84,6 +84,7 @@ export function loadConfig(overrides: AgentConfigOverrides = {}): AgentRuntimeCo
   const port = numberEnv("KUBETRAIL_AGENT_PORT", 18080);
   const apiKey = stringOverride(overrides.apiKey) ?? providerApiKey(provider);
   const authToken = stringOverride(overrides.authToken) ?? providerAuthToken(provider);
+  const baseUrl = stringOverride(overrides.baseUrl) ?? providerBaseUrl(provider);
   return {
     provider,
     language: normalizeLanguage(overrides.language ?? firstNonEmpty("KUBETRAIL_AGENT_LANGUAGE")),
@@ -95,7 +96,7 @@ export function loadConfig(overrides: AgentConfigOverrides = {}): AgentRuntimeCo
     authToken,
     model: stringOverride(overrides.model) ?? firstNonEmpty("KUBETRAIL_AGENT_MODEL") ?? defaultModel(),
     fallbackModel: stringOverride(overrides.fallbackModel) ?? firstNonEmpty("KUBETRAIL_AGENT_FALLBACK_MODEL"),
-    baseUrl: stringOverride(overrides.baseUrl) ?? providerBaseUrl(provider),
+    baseUrl,
     apiKeyConfigured: Boolean(apiKey),
     authTokenConfigured: Boolean(authToken),
     httpsProxy: stringOverride(overrides.httpsProxy) ?? firstNonEmpty("KUBETRAIL_AGENT_HTTPS_PROXY"),
@@ -106,7 +107,7 @@ export function loadConfig(overrides: AgentConfigOverrides = {}): AgentRuntimeCo
     host: firstNonEmpty("KUBETRAIL_AGENT_HOST") ?? "127.0.0.1",
     port,
     claudeConfigDir: resolve(firstNonEmpty("KUBETRAIL_AGENT_CONFIG_DIR", "CLAUDE_CONFIG_DIR") ?? resolve(runtimeDir, "claude")),
-    codexHomeDir: resolve(firstNonEmpty("KUBETRAIL_AGENT_CODEX_HOME", "CODEX_HOME") ?? resolve(runtimeDir, "codex")),
+    codexHomeDir: resolveCodexHomeDir(provider, runtimeDir, apiKey, baseUrl),
     pathToClaudeCodeExecutable: stringOverride(overrides.pathToClaudeCodeExecutable) ?? firstNonEmpty("KUBETRAIL_AGENT_PATH_TO_CLAUDE"),
     pathToCodexExecutable: stringOverride(overrides.pathToCodexExecutable) ?? firstNonEmpty("KUBETRAIL_AGENT_PATH_TO_CODEX"),
     enableGatewayModelDiscovery: overrides.enableGatewayModelDiscovery ?? boolEnv("KUBETRAIL_AGENT_ENABLE_GATEWAY_MODEL_DISCOVERY", false),
@@ -351,6 +352,17 @@ export async function listSkillNamesForProvider(config: AgentRuntimeConfig): Pro
 
 export function resolveRuntimeDir(): string {
   return resolve(firstNonEmpty("KUBETRAIL_AGENT_RUNTIME_DIR") ?? defaultRuntimeDir());
+}
+
+function resolveCodexHomeDir(provider: AgentProvider, runtimeDir: string, apiKey?: string, baseUrl?: string): string {
+  const explicitHome = firstNonEmpty("KUBETRAIL_AGENT_CODEX_HOME", "CODEX_HOME");
+  if (explicitHome) {
+    return resolve(explicitHome);
+  }
+  if (provider === "codex" && !apiKey && !baseUrl) {
+    return resolve(homedir(), ".codex");
+  }
+  return resolve(runtimeDir, "codex");
 }
 
 function defaultRuntimeDir(): string {

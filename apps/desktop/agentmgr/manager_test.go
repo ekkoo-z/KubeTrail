@@ -57,6 +57,17 @@ func TestAgentEnvPreservesConfiguredRuntimeDir(t *testing.T) {
 	}
 }
 
+func TestMergeEnvLetsLoginShellOverridePath(t *testing.T) {
+	env := mergeEnv([]string{"PATH=/usr/bin:/bin", "HOME=/tmp/base"}, []string{"PATH=/custom/bin:/usr/bin"})
+
+	if got := envValue(env, "PATH"); got != "/custom/bin:/usr/bin" {
+		t.Fatalf("expected login shell PATH to win, got %q", got)
+	}
+	if got := envValue(env, "HOME"); got != "/tmp/base" {
+		t.Fatalf("expected base HOME to be preserved, got %q", got)
+	}
+}
+
 func TestAgentEnvEncodesMCPServers(t *testing.T) {
 	env := agentEnv(nil, AgentConfig{
 		MCPServers: []MCPServerConfig{
@@ -194,6 +205,106 @@ func TestResolveClaudeConfiguredCommandUsesPath(t *testing.T) {
 	if source != "configured" {
 		t.Fatalf("expected configured source, got %q", source)
 	}
+}
+
+func TestResolveCodexConfiguredCommandUsesProvidedEnvPath(t *testing.T) {
+	dir := t.TempDir()
+	codexPath := filepath.Join(dir, "codex")
+	if runtime.GOOS == "windows" {
+		codexPath = filepath.Join(dir, "codex.exe")
+	}
+	if err := os.WriteFile(codexPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, source, err := resolveCodexForEnv([]string{
+		"PATH=" + dir,
+		"KUBETRAIL_AGENT_PATH_TO_CODEX=codex",
+	})
+	if err != nil {
+		t.Fatalf("resolveCodexForEnv failed: %v", err)
+	}
+	if got != codexPath {
+		t.Fatalf("expected %q, got %q", codexPath, got)
+	}
+	if source != "configured" {
+		t.Fatalf("expected configured source, got %q", source)
+	}
+}
+
+func TestEnsureCodexVendorPathAddsNpmVendorPath(t *testing.T) {
+	root := t.TempDir()
+	wrapper := filepath.Join(root, "bin", "codex.js")
+	if err := os.MkdirAll(filepath.Dir(wrapper), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(wrapper, []byte("#!/usr/bin/env node\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	vendorPath := filepath.Join(root, "node_modules", "@openai", "codex-darwin-arm64", "vendor", "aarch64-apple-darwin", "codex-path")
+	if err := os.MkdirAll(vendorPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	env := ensureCodexVendorPath([]string{"PATH=/usr/bin:/bin"}, wrapper)
+	if !pathListContains(envValue(env, "PATH"), vendorPath) {
+		t.Fatalf("expected PATH to include %q, got %q", vendorPath, envValue(env, "PATH"))
+	}
+}
+
+func TestEnsureCodexVendorPathDoesNotDuplicatePath(t *testing.T) {
+	targetRoot := filepath.Join(t.TempDir(), "vendor", "aarch64-apple-darwin")
+	codexPath := filepath.Join(targetRoot, "bin", "codex")
+	vendorPath := filepath.Join(targetRoot, "codex-path")
+	if err := os.MkdirAll(filepath.Dir(codexPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(vendorPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(codexPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := ensureCodexVendorPath([]string{"PATH=/usr/bin:" + vendorPath}, codexPath)
+
+	count := 0
+	for _, part := range filepath.SplitList(envValue(env, "PATH")) {
+		if normalizeExecutablePath(part) == normalizeExecutablePath(vendorPath) {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected vendor path once, got %d in %q", count, envValue(env, "PATH"))
+	}
+}
+
+func TestResolveNodeUsesProvidedEnvPath(t *testing.T) {
+	dir := t.TempDir()
+	nodePath := filepath.Join(dir, "node")
+	if runtime.GOOS == "windows" {
+		nodePath = filepath.Join(dir, "node.exe")
+	}
+	if err := os.WriteFile(nodePath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := resolveNodeForEnv([]string{"PATH=" + dir})
+	if err != nil {
+		t.Fatalf("resolveNodeForEnv failed: %v", err)
+	}
+	if got != nodePath {
+		t.Fatalf("expected %q, got %q", nodePath, got)
+	}
+}
+
+func pathListContains(pathValue, want string) bool {
+	want = normalizeExecutablePath(want)
+	for _, part := range filepath.SplitList(pathValue) {
+		if normalizeExecutablePath(part) == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestEnvValueFromList(t *testing.T) {

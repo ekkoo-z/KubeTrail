@@ -21,7 +21,7 @@ export type AgentEvent =
   | { type: "assistant"; text: string; error?: string }
   | { type: "tool_use"; toolName: string; toolInput: Record<string, unknown>; skillName?: string }
   | { type: "result"; sessionId: string; success: boolean; text: string; costUsd?: number; turns?: number }
-  | { type: "system"; subtype?: string; text: string }
+  | { type: "system"; subtype?: string; text: string; estimatedTokens?: number; estimatedTokensDelta?: number; toolName?: string; elapsedSeconds?: number }
   | { type: "stderr"; text: string }
   | { type: "error"; message: string };
 
@@ -284,7 +284,17 @@ function toEvent(message: SDKMessage, enabledSkills: readonly string[] = []): Ag
   }
   if (message.type === "system") {
     const subtype = "subtype" in message ? String(message.subtype) : undefined;
-    if (subtype === "thinking_tokens" || subtype === "commands_changed") {
+    if (subtype === "thinking_tokens") {
+      const thinking = message as { estimated_tokens?: number; estimated_tokens_delta?: number };
+      return {
+        type: "system",
+        subtype,
+        text: "thinking",
+        estimatedTokens: thinking.estimated_tokens,
+        estimatedTokensDelta: thinking.estimated_tokens_delta,
+      };
+    }
+    if (subtype === "commands_changed") {
       return undefined;
     }
     if (subtype === "permission_denied") {
@@ -300,6 +310,18 @@ function toEvent(message: SDKMessage, enabledSkills: readonly string[] = []): Ag
       return { type: "system", subtype, text: `status: ${status.status ?? "idle"}${status.compact_error ? ` compact_error=${status.compact_error}` : ""}` };
     }
     return { type: "system", subtype, text: JSON.stringify(message) };
+  }
+  if (message.type === "tool_progress") {
+    return {
+      type: "system",
+      subtype: "tool_progress",
+      text: `tool progress: ${message.tool_name}`,
+      toolName: message.tool_name,
+      elapsedSeconds: message.elapsed_time_seconds,
+    };
+  }
+  if (message.type === "tool_use_summary") {
+    return { type: "system", subtype: "tool_use_summary", text: message.summary };
   }
   if (message.type === "auth_status") {
     const auth = message as { error?: string; output?: string[]; isAuthenticating?: boolean };
@@ -356,6 +378,7 @@ async function runKubeTrailCodexAgent(config: AgentRuntimeConfig, params: RunAge
   let sessionId = params.resumeSession || undefined;
   let finalText = "";
   let sawInit = false;
+  let currentTurnStarted = false;
   const { events } = await thread.runStreamed(prompt, { signal: params.abortController?.signal });
 
   try {
@@ -373,6 +396,11 @@ async function runKubeTrailCodexAgent(config: AgentRuntimeConfig, params: RunAge
         });
         continue;
       }
+      if (event.type === "turn.started") {
+        currentTurnStarted = true;
+        finalText = "";
+        continue;
+      }
       if (!sawInit && sessionId) {
         sawInit = true;
         params.onEvent?.({
@@ -383,6 +411,9 @@ async function runKubeTrailCodexAgent(config: AgentRuntimeConfig, params: RunAge
           skills,
           provider: "codex",
         });
+      }
+      if ((event.type === "item.started" || event.type === "item.updated" || event.type === "item.completed") && !currentTurnStarted) {
+        continue;
       }
       const mapped = codexEventToAgentEvents(event);
       for (const agentEvent of mapped) {
@@ -427,6 +458,9 @@ function codexEventToAgentEvents(event: ThreadEvent): AgentEvent[] {
 }
 
 function codexItemToAgentEvents(item: ThreadItem, eventType: "item.started" | "item.updated" | "item.completed"): AgentEvent[] {
+  if (item.type === "reasoning" && (eventType === "item.updated" || eventType === "item.completed") && item.text.trim()) {
+    return [{ type: "system", subtype: "reasoning", text: item.text.trim() }];
+  }
   if (item.type === "agent_message" && eventType === "item.completed" && item.text.trim()) {
     return [{ type: "assistant", text: item.text.trim() }];
   }

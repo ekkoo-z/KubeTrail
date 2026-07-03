@@ -42,6 +42,19 @@ const stoppingChat = ref(false)
 const composingInput = ref(false)
 let lastCompositionEnd = 0
 
+type AgentTraceEntry = {
+  key: string
+  text: string
+}
+
+type AgentTraceState = {
+  entries: AgentTraceEntry[]
+  answer: string
+  traceTitle: string
+  answerTitle: string
+  targetMessageIndex: number
+}
+
 const hasActiveScan = computed(() => !!scanStore.activeResultId)
 const activeScanResult = computed(() => {
   if (!scanStore.activeResultId) return null
@@ -382,6 +395,7 @@ async function sendMessage() {
     return
   }
 
+  const historicalAssistantFingerprints = collectPreviousAssistantFingerprints(agentStore.messages)
   inputMsg.value = ''
   pendingPrompt.value = msg
   agentStore.clearRuntimeInfo()
@@ -402,15 +416,15 @@ async function sendMessage() {
   }
 
   agentStore.addMessage({ role: 'assistant', content: '', timestamp: Date.now() })
+  const assistantMessageIndex = agentStore.messages.length - 1
   cleanupChatListeners()
 
   const sid = agentStore.sessionId
+  const trace = createAgentTraceState(assistantMessageIndex)
+  let bufferedAssistantText = ''
   const unsub = on(`agent:${sid}:message`, (line: string) => {
     try {
       const event = JSON.parse(line)
-      if (event.type === 'system' && event.subtype === 'thinking_tokens') {
-        return
-      }
       if (event.sessionId) {
         agentStore.setClaudeSessionId(event.sessionId)
       }
@@ -421,12 +435,19 @@ async function sendMessage() {
           tools: Array.isArray(event.tools) ? event.tools : [],
           skills: Array.isArray(event.skills) ? event.skills : [],
         })
-      } else if (event.type === 'assistant' && event.text) {
-        agentStore.setLastAssistantContent(event.text)
+        upsertTraceEntry(trace, 'init', formatInitTrace(event))
         scrollToBottom()
+      } else if (event.type === 'tool_use') {
+        upsertTraceEntry(trace, traceKeyForTool(event), formatToolUseLabel(event.toolName, event.skillName, event.toolInput))
+        scrollToBottom()
+      } else if (event.type === 'assistant' && event.text) {
+        if (!isHistoricalReplayText(event.text, historicalAssistantFingerprints)) {
+          bufferedAssistantText = String(event.text || '').trim()
+        }
       } else if (event.type === 'result') {
-        if (event.text) {
-          agentStore.applyAssistantResult(event.text)
+        const resultText = String(event.text || '').trim() || bufferedAssistantText
+        if (resultText) {
+          setTraceAnswer(trace, resultText)
         }
         agentStore.streaming = false
         pendingPrompt.value = ''
@@ -440,16 +461,19 @@ async function sendMessage() {
         if (last?.role === 'assistant' && !last.content) {
           last.content = `Error: ${text}`
         } else {
-          agentStore.addMessage({ role: 'system', content: `Error: ${text}`, timestamp: Date.now() })
+          setTraceAnswer(trace, `Error: ${text}`)
         }
         scrollToBottom()
         cleanupChatListeners()
       } else if ((event.type === 'system' || event.type === 'stderr') && event.text) {
-        agentStore.addMessage({ role: 'system', content: event.text, timestamp: Date.now() })
-        scrollToBottom()
+        const traceText = formatRuntimeTrace(event)
+        if (traceText && !isHistoricalReplayRuntimeTrace(event, traceText, historicalAssistantFingerprints)) {
+          upsertTraceEntry(trace, traceKeyForRuntimeEvent(event), traceText)
+          scrollToBottom()
+        }
       }
     } catch {
-      agentStore.appendToLast(line)
+      upsertTraceEntry(trace, `raw:${line}`, line)
       scrollToBottom()
     }
   })
@@ -617,12 +641,15 @@ async function runAiSurfaceAnalysis() {
   agentStore.clearRuntimeInfo()
   agentStore.addMessage({ role: 'user', content: visiblePrompt, timestamp: Date.now() })
   agentStore.addMessage({ role: 'assistant', content: currentLocale.value === 'en-US' ? 'Starting AI attack surface analysis...' : '正在启动 AI 攻击面研判...', timestamp: Date.now() })
+  const assistantMessageIndex = agentStore.messages.length - 1
+  const trace = createAgentTraceState(assistantMessageIndex)
   const activeScan = scanStore.results.find(r => r.id === scanStore.activeResultId)
   if (activeScan?.sourcePath) agentStore.setScanSourcePath(activeScan.sourcePath)
   subTab.value = 'chat'
   scrollToBottom()
   let finished = false
   let structuredResultReceived = false
+  let bufferedAnalysisText = ''
 
   const finish = (ok: boolean, message?: string) => {
     if (finished) return
@@ -656,47 +683,44 @@ async function runAiSurfaceAnalysis() {
         aiAnalysisStatus.value = currentLocale.value === 'en-US'
           ? `Agent analyzing · ${modelLabel} · ${skillsLoaded} skills loaded`
           : `Agent 分析中 · ${modelLabel} · ${skillsLoaded} Skills 已加载`
-        const initMsg = currentLocale.value === 'en-US'
-          ? [
-              `Analysis started: ${modelLabel}`,
-              `${skillsLoaded} analysis skills loaded`,
-              'Loading scan result...',
-            ].join('\n')
-          : [
-              `启动分析: ${modelLabel}`,
-              `已加载 ${skillsLoaded} 个分析技能`,
-              '正在加载扫描结果...',
-            ].join('\n')
-        updateAiAnalysisChat(initMsg)
+        upsertTraceEntry(trace, 'init', formatInitTrace(event))
+        scrollToBottom()
       } else if (event.type === 'tool_use') {
         const label = formatToolUseLabel(event.toolName, event.skillName, event.toolInput)
         aiAnalysisStatus.value = label
-        appendAnalysisLog(label)
+        upsertTraceEntry(trace, traceKeyForTool(event), label)
+        scrollToBottom()
       } else if (event.type === 'assistant' && event.text) {
         aiAnalysisStatus.value = currentLocale.value === 'en-US' ? 'Agent is generating analysis results...' : 'Agent 正在生成分析结果...'
-        updateAiAnalysisChat(String(event.text))
-        scrollToBottom()
+        bufferedAnalysisText = String(event.text || '').trim()
       } else if (event.type === 'system' && event.text) {
-        aiAnalysisStatus.value = String(event.text).slice(0, 120)
+        const traceText = formatRuntimeTrace(event)
+        if (traceText) {
+          aiAnalysisStatus.value = traceText.slice(0, 120)
+          upsertTraceEntry(trace, traceKeyForRuntimeEvent(event), traceText)
+          scrollToBottom()
+        }
       } else if (event.type === 'result') {
         try {
-          const rawText = String(event.text || '')
+          const rawText = String(event.text || '').trim() || bufferedAnalysisText
           const findings = parseAiSurfaceFindings(rawText)
           structuredResultReceived = true
           applyAiSurfaceFindings(findings)
-          updateAiAnalysisChat(formatAiSurfaceChatResult(rawText, findings))
+          setTraceAnswer(trace, formatAiSurfaceChatResult(rawText, findings))
           scrollToBottom()
           finish(true, findings.length
             ? (currentLocale.value === 'en-US' ? `AI identified ${findings.length} attack surface findings` : `AI 已识别 ${findings.length} 个攻击面`)
             : (currentLocale.value === 'en-US' ? 'AI did not return new parseable attack surface findings' : 'AI 未返回新的可解析攻击面'))
         } catch (e: any) {
           const message = currentLocale.value === 'en-US' ? `Failed to parse AI result: ${e?.message || e}` : `AI 结果解析失败: ${e?.message || e}`
-          updateAiAnalysisChatError(message)
+          setTraceAnswer(trace, `Error: ${message}`)
+          scrollToBottom()
           finish(false, message)
         }
       } else if (event.type === 'error') {
         const message = event.message || event.text || (currentLocale.value === 'en-US' ? 'Agent execution failed' : 'Agent 执行失败')
-        updateAiAnalysisChatError(message)
+        setTraceAnswer(trace, `Error: ${message}`)
+        scrollToBottom()
         finish(false, message)
       }
     } catch {
@@ -705,14 +729,16 @@ async function runAiSurfaceAnalysis() {
   }))
 
   addAiAnalysisUnsub(on(`agent:${sid}:error`, (err: string) => {
-    updateAiAnalysisChatError(err)
+    setTraceAnswer(trace, `Error: ${err}`)
+    scrollToBottom()
     finish(false, err)
   }))
 
   addAiAnalysisUnsub(on(`agent:${sid}:done`, () => {
     if (finished) return
     if (aiAnalysisStopRequested) {
-      updateAiAnalysisChatError(currentLocale.value === 'en-US' ? 'AI attack surface analysis was stopped' : 'AI 攻击面研判已中断')
+      setTraceAnswer(trace, currentLocale.value === 'en-US' ? 'AI attack surface analysis was stopped' : 'AI 攻击面研判已中断')
+      scrollToBottom()
       finish(false, currentLocale.value === 'en-US' ? 'AI analysis stopped' : 'AI 分析已中断')
       return
     }
@@ -729,7 +755,8 @@ async function runAiSurfaceAnalysis() {
     aiAnalysisStatus.value = currentLocale.value === 'en-US' ? 'Agent analyzing...' : 'Agent 分析中...'
     await api.StartAgentChat(scanStore.activeResultId, buildAiSurfacePrompt(), sid, '', currentLocale.value)
   } catch (e: any) {
-    updateAiAnalysisChatError(String(e?.message || e))
+    setTraceAnswer(trace, `Error: ${String(e?.message || e)}`)
+    scrollToBottom()
     finish(false, String(e?.message || e))
   }
 }
@@ -738,26 +765,168 @@ function surfaceAnalysisSessionId(): string {
   return `surface-analysis-${stableSurfaceId(activeScanAnalysisKey.value)}`
 }
 
-function updateAiAnalysisChat(content: string) {
-  const text = content.trim()
-  if (!text) return
-  agentStore.setLastAssistantContent(text)
-}
-
-function updateAiAnalysisChatError(message: string) {
-  const text = String(message || (currentLocale.value === 'en-US' ? 'Agent execution failed' : 'Agent 执行失败')).trim()
-  const last = agentStore.messages[agentStore.messages.length - 1]
-  if (last?.role === 'assistant' && last.content.trim()) {
-    agentStore.setLastAssistantContent(`${last.content.trim()}\n\nError: ${text}`)
-  } else {
-    agentStore.setLastAssistantContent(`Error: ${text}`)
+function createAgentTraceState(targetMessageIndex = -1): AgentTraceState {
+  return {
+    entries: [],
+    answer: '',
+    traceTitle: currentLocale.value === 'en-US' ? 'Runtime Summary' : '运行摘要',
+    answerTitle: currentLocale.value === 'en-US' ? 'Final Answer' : '最终回答',
+    targetMessageIndex,
   }
-  scrollToBottom()
 }
 
-function formatToolUseLabel(toolName: string, skillName?: string, _input?: Record<string, unknown>): string {
+function upsertTraceEntry(trace: AgentTraceState, key: string, text: string) {
+  const clean = text.trim()
+  if (!clean) return
+  const existing = trace.entries.find(entry => entry.key === key)
+  if (existing) {
+    existing.text = clean
+  } else {
+    trace.entries.push({ key, text: clean })
+  }
+  renderAgentTrace(trace)
+}
+
+function setTraceAnswer(trace: AgentTraceState, text: string) {
+  trace.answer = text.trim()
+  renderAgentTrace(trace)
+}
+
+function renderAgentTrace(trace: AgentTraceState) {
+  const sections: string[] = []
+  if (trace.entries.length) {
+    sections.push([
+      `**${trace.traceTitle}**`,
+      ...trace.entries.map(entry => `- ${entry.text}`),
+    ].join('\n'))
+  }
+  if (trace.answer) {
+    sections.push([`**${trace.answerTitle}**`, trace.answer].join('\n'))
+  }
+  const content = sections.join('\n\n').trim()
+  if (!content) return
+  if (!agentStore.setMessageContentAt(trace.targetMessageIndex, 'assistant', content)) {
+    agentStore.setLastAssistantContent(content)
+  }
+}
+
+function collectPreviousAssistantFingerprints(messages: Array<{ role?: string; content?: string }>): Set<string> {
+  const fingerprints = new Set<string>()
+  for (const msg of messages) {
+    if (msg?.role !== 'assistant') continue
+    addHistoricalAssistantFingerprint(fingerprints, msg.content)
+    addHistoricalAssistantFingerprint(fingerprints, extractFinalAnswerSection(msg.content))
+  }
+  return fingerprints
+}
+
+function addHistoricalAssistantFingerprint(fingerprints: Set<string>, value: unknown) {
+  const normalized = normalizeReplayText(value)
+  if (normalized.length >= 24) fingerprints.add(normalized)
+}
+
+function extractFinalAnswerSection(content: unknown): string {
+  const text = normalizeTraceText(content)
+  if (!text) return ''
+  const marker = /\*\*(?:最终回答|Final Answer)\*\*/gi
+  let last: RegExpExecArray | null = null
+  for (let match = marker.exec(text); match; match = marker.exec(text)) {
+    last = match
+  }
+  return last ? text.slice(last.index + last[0].length).trim() : ''
+}
+
+function isHistoricalReplayRuntimeTrace(event: any, traceText: string, fingerprints: Set<string>): boolean {
+  const subtype = String(event?.subtype || '')
+  if (subtype !== 'tool_use_summary' && subtype !== 'reasoning') return false
+  return isHistoricalReplayText(event?.text, fingerprints) || isHistoricalReplayText(traceText, fingerprints)
+}
+
+function isHistoricalReplayText(text: unknown, fingerprints: Set<string>): boolean {
+  if (!fingerprints.size) return false
+  const normalized = normalizeReplayText(text)
+  if (normalized.length < 24) return false
+  if (fingerprints.has(normalized)) return true
+  if (normalized.length < 80) return false
+  for (const fingerprint of fingerprints) {
+    if (fingerprint.length < 80) continue
+    if (normalized.includes(fingerprint) || fingerprint.includes(normalized)) return true
+  }
+  return false
+}
+
+function normalizeReplayText(value: unknown): string {
+  return normalizeTraceText(value).replace(/\s+/g, ' ')
+}
+
+function normalizeTraceText(value: unknown): string {
+  return String(value ?? '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n /g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+function formatInitTrace(event: any): string {
+  const model = typeof event.model === 'string' && event.model ? event.model : 'model'
+  const provider = typeof event.provider === 'string' && event.provider ? event.provider : 'agent'
+  const skills = Array.isArray(event.skills) ? event.skills.map((skill: unknown) => String(skill).trim()).filter(Boolean) : []
+  const skillList = skills.length
+    ? skills.join(', ')
+    : (currentLocale.value === 'en-US' ? 'none' : '无')
+  return currentLocale.value === 'en-US'
+    ? `Runtime: ${provider} · ${model}; loaded skills: ${skillList}`
+    : `运行环境: ${provider} · ${model}；加载 Skills: ${skillList}`
+}
+
+function formatRuntimeTrace(event: any): string {
+  if (event.type === 'stderr') {
+    const text = String(event.text || '').trim()
+    return text ? truncateTraceText(text, 180) : ''
+  }
+  const subtype = String(event.subtype || '')
+  if (subtype === 'thinking_tokens') {
+    return ''
+  }
+  if (subtype === 'tool_progress') {
+    return ''
+  }
+  if (subtype === 'tool_use_summary') {
+    return ''
+  }
+  if (subtype === 'reasoning') {
+    return ''
+  }
+  if (subtype === 'api_retry' || subtype === 'status' || subtype === 'rate_limit' || subtype === 'auth') {
+    return truncateTraceText(String(event.text || ''), 220)
+  }
+  return ''
+}
+
+function traceKeyForRuntimeEvent(event: any): string {
+  const subtype = String(event.subtype || event.type || 'runtime')
+  if (subtype === 'thinking_tokens') return 'thinking'
+  if (subtype === 'tool_progress') return `tool-progress:${String(event.toolName || event.tool_name || 'tool')}`
+  if (subtype === 'status' || subtype === 'api_retry' || subtype === 'rate_limit' || subtype === 'auth') return subtype
+  return `${subtype}:${String(event.text || '').slice(0, 80)}`
+}
+
+function traceKeyForTool(event: any): string {
+  return [
+    'tool',
+    String(event.toolName || ''),
+    String(event.skillName || ''),
+    stableTraceInput(event.toolInput),
+  ].join(':')
+}
+
+function formatToolUseLabel(toolName: string, skillName?: string, input?: Record<string, unknown>): string {
+  const hint = formatToolInputHint(input)
   if (toolName === 'Skill' && skillName) {
-    return currentLocale.value === 'en-US' ? `Calling analysis skill: ${skillName}` : `调用分析技能: ${skillName}`
+    const label = currentLocale.value === 'en-US' ? `Calling analysis skill: ${skillName}` : `调用分析技能: ${skillName}`
+    return hint ? `${label} ${hint}` : label
   }
   const labelMap: Record<string, string> = currentLocale.value === 'en-US'
     ? {
@@ -784,19 +953,56 @@ function formatToolUseLabel(toolName: string, skillName?: string, _input?: Recor
         Grep: '搜索内容...',
         Glob: '查找文件...',
       }
-  return labelMap[toolName] || (currentLocale.value === 'en-US' ? `Calling tool: ${toolName}` : `调用工具: ${toolName}`)
+  const label = labelMap[toolName] || (currentLocale.value === 'en-US' ? `Calling tool: ${toolName}` : `调用工具: ${toolName}`)
+  return hint ? `${label} ${hint}` : label
 }
 
-function appendAnalysisLog(text: string) {
-  const last = agentStore.messages[agentStore.messages.length - 1]
-  if (last?.role === 'assistant') {
-    const logLine = `- ${text}`
-    if (!last.content.includes(logLine)) {
-      agentStore.setLastAssistantContent(`${last.content}\n${logLine}`)
-    }
-    return
+function formatToolInputHint(input?: Record<string, unknown>): string {
+  if (!input || typeof input !== 'object') return ''
+  const keys = ['skill', 'factId', 'ref', 'templateId', 'format', 'query', 'path', 'namespace', 'resource', 'verb', 'outDir']
+  const parts: string[] = []
+  for (const key of keys) {
+    if (!(key in input)) continue
+    const formatted = formatTraceValue((input as Record<string, unknown>)[key])
+    if (formatted) parts.push(`${key}=${formatted}`)
+    if (parts.length >= 3) break
   }
-  agentStore.addMessage({ role: 'system', content: text, timestamp: Date.now() })
+  return parts.length ? `(${parts.join(', ')})` : ''
+}
+
+function stableTraceInput(input: unknown): string {
+  if (!input || typeof input !== 'object') return ''
+  try {
+    const record = input as Record<string, unknown>
+    const sorted = Object.keys(record).sort().reduce((out, key) => {
+      out[key] = record[key]
+      return out
+    }, {} as Record<string, unknown>)
+    return JSON.stringify(sorted).slice(0, 200)
+  } catch {
+    return String(input).slice(0, 200)
+  }
+}
+
+function formatTraceValue(value: unknown): string {
+  if (typeof value === 'string') return traceCodeValue(value)
+  if (typeof value === 'number' || typeof value === 'boolean') return traceCodeValue(String(value))
+  if (Array.isArray(value)) {
+    const values = value.map(formatTraceValue).filter(Boolean)
+    return values.length ? `[${values.slice(0, 3).join(', ')}${values.length > 3 ? ', ...' : ''}]` : ''
+  }
+  return ''
+}
+
+function traceCodeValue(value: string): string {
+  const text = truncateTraceText(value.trim(), 80).replace(/`/g, '')
+  return text ? `\`${text}\`` : ''
+}
+
+function truncateTraceText(value: string, max: number): string {
+  const text = value.replace(/\s+/g, ' ').trim()
+  if (text.length <= max) return text
+  return `${text.slice(0, Math.max(0, max - 1))}...`
 }
 
 async function stopAiSurfaceAnalysis() {

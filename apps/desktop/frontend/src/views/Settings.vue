@@ -387,11 +387,12 @@ async function refreshLogs() {
               <div class="runtime-input">
                 <el-input
                   v-model="codexPath"
-                  placeholder="留空则自动从 PATH 发现 codex"
+                  placeholder="留空自动从登录 Shell/PATH 发现；可填 /Users/ekkoo/.local/bin/codex"
                   style="max-width:520px"
                 />
                 <el-button @click="refreshRuntimeInfo" :loading="runtimeLoading">检测</el-button>
               </div>
+              <div class="field-hint">官方 Codex 模式默认使用本机 ~/.codex；显式路径会优先于自动发现</div>
               <div class="runtime-hint">
                 {{ runtimeInfo?.codexAvailable ? `可用 (${runtimeInfo.codexSource || 'sdk'}): ${runtimeInfo.codexPath}` : (runtimeInfo?.codexError || '未检测') }}
               </div>

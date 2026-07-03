@@ -90,6 +90,16 @@ export const useAgentStore = defineStore('agent', () => {
     addMessage({ role: 'assistant', content: text, timestamp: Date.now() })
   }
 
+  function setMessageContentAt(index: number, role: ChatMessage['role'], content: string): boolean {
+    const msg = messages.value[index]
+    if (!msg || msg.role !== role) return false
+    if (!sameAssistantText(msg.content, content)) {
+      msg.content = content
+    }
+    persistCurrentSession()
+    return true
+  }
+
   function applyAssistantResult(content: string) {
     const text = content.trim()
     if (!text) return
@@ -310,7 +320,7 @@ export const useAgentStore = defineStore('agent', () => {
     }
   }
 
-  return { status, sessions, surfaceAnalyses, messages, streaming, sessionId, claudeSessionId, scanSourcePath, provider, model, loadedTools, loadedSkills, attackGraph, addMessage, appendToLast, setLastAssistantContent, applyAssistantResult, clearMessages, setStatus, setGraph, setClaudeSessionId, setScanSourcePath, setRuntimeInfo, clearRuntimeInfo, removeLatestExchange, newSession, selectSession, deleteSession, renameSession, touchCurrentSession, getSurfaceAnalysis, setSurfaceAnalysis, clearSurfaceAnalysis }
+  return { status, sessions, surfaceAnalyses, messages, streaming, sessionId, claudeSessionId, scanSourcePath, provider, model, loadedTools, loadedSkills, attackGraph, addMessage, appendToLast, setLastAssistantContent, setMessageContentAt, applyAssistantResult, clearMessages, setStatus, setGraph, setClaudeSessionId, setScanSourcePath, setRuntimeInfo, clearRuntimeInfo, removeLatestExchange, newSession, selectSession, deleteSession, renameSession, touchCurrentSession, getSurfaceAnalysis, setSurfaceAnalysis, clearSurfaceAnalysis }
 })
 
 function loadSessions(): ChatSession[] {

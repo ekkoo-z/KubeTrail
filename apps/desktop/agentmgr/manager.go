@@ -137,14 +137,14 @@ func (m *Manager) Start(config AgentConfig) error {
 	m.generation++
 	gen := m.generation
 
-	env := agentEnv(os.Environ(), config)
+	env := agentEnv(agentBaseEnv(), config)
 	provider := normalizeAgentProvider(config.Provider)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
 
 	if bundlePath := findBundle(); bundlePath != "" {
-		nodePath, err := resolveNode()
+		nodePath, err := resolveNodeForEnv(env)
 		if err != nil {
 			cancel()
 			return fmt.Errorf("找不到 node: %w", err)
@@ -162,11 +162,12 @@ func (m *Manager) Start(config AgentConfig) error {
 				cancel()
 				return err
 			}
+			env = ensureCodexVendorPath(env, codexPath)
 			env = appendEnv(env, "KUBETRAIL_AGENT_PATH_TO_CODEX", codexPath)
 		}
 		m.cmd = exec.CommandContext(ctx, nodePath, bundlePath, "pipe")
 	} else if agentDir := findAgentDir(m.rootDir); agentDir != "" {
-		npxPath, err := resolveNpx()
+		npxPath, err := resolveNpxForEnv(env)
 		if err != nil {
 			cancel()
 			return fmt.Errorf("找不到 npx: %w", err)
@@ -290,6 +291,107 @@ func agentEnv(base []string, config AgentConfig) []string {
 		}
 	}
 	return env
+}
+
+func agentBaseEnv() []string {
+	return mergeEnv(os.Environ(), loginShellEnv())
+}
+
+func mergeEnv(base, overlay []string) []string {
+	env := append([]string(nil), base...)
+	for _, item := range overlay {
+		key, value, ok := splitEnvItem(item)
+		if ok {
+			env = appendEnv(env, key, value)
+		}
+	}
+	return env
+}
+
+var loginShellEnvOnce sync.Once
+var loginShellEnvCached []string
+
+func loginShellEnv() []string {
+	loginShellEnvOnce.Do(func() {
+		loginShellEnvCached = loadLoginShellEnv()
+	})
+	return append([]string(nil), loginShellEnvCached...)
+}
+
+func loadLoginShellEnv() []string {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	for _, shell := range loginShellCandidates() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		cmd := exec.CommandContext(ctx, shell, "-l", "-i", "-c", "command env")
+		cmd.Env = loginShellSeedEnv(shell)
+		out, err := cmd.Output()
+		cancel()
+		if err != nil || len(out) == 0 {
+			continue
+		}
+		env := parseEnvOutput(string(out))
+		if len(env) > 0 {
+			return env
+		}
+	}
+	return nil
+}
+
+func loginShellSeedEnv(shell string) []string {
+	env := []string{
+		"PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+		"SHELL=" + shell,
+		"TERM=dumb",
+	}
+	for _, key := range []string{"HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE"} {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			env = appendEnv(env, key, value)
+		}
+	}
+	return env
+}
+
+func loginShellCandidates() []string {
+	var candidates []string
+	seen := map[string]bool{}
+	add := func(path string) {
+		path = strings.TrimSpace(path)
+		if path == "" || seen[path] || !isExecutableFile(path) {
+			return
+		}
+		seen[path] = true
+		candidates = append(candidates, path)
+	}
+	add(os.Getenv("SHELL"))
+	add("/bin/zsh")
+	add("/bin/bash")
+	add("/bin/sh")
+	return candidates
+}
+
+func parseEnvOutput(output string) []string {
+	var env []string
+	for _, line := range strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n") {
+		key, value, ok := splitEnvItem(line)
+		if ok {
+			env = appendEnv(env, key, value)
+		}
+	}
+	return env
+}
+
+func splitEnvItem(item string) (string, string, bool) {
+	idx := strings.IndexByte(item, '=')
+	if idx <= 0 {
+		return "", "", false
+	}
+	key := item[:idx]
+	if strings.ContainsAny(key, "\x00 \t\r\n") {
+		return "", "", false
+	}
+	return key, item[idx+1:], true
 }
 
 func normalizeAgentProvider(provider string) string {
@@ -967,12 +1069,13 @@ func isExecutableFile(path string) bool {
 
 func ResolveRuntimeInfo(config AgentConfig) AgentRuntimeInfo {
 	info := AgentRuntimeInfo{}
-	if nodePath, err := resolveNode(); err != nil {
+	env := agentEnv(agentBaseEnv(), config)
+	if nodePath, err := resolveNodeForEnv(env); err != nil {
 		info.NodeError = err.Error()
 	} else {
 		info.NodePath = nodePath
 	}
-	claudePath, source, err := resolveClaudeForEnv(agentEnv(os.Environ(), config))
+	claudePath, source, err := resolveClaudeForEnv(env)
 	if err != nil {
 		info.ClaudeError = err.Error()
 	} else {
@@ -980,7 +1083,7 @@ func ResolveRuntimeInfo(config AgentConfig) AgentRuntimeInfo {
 		info.ClaudeSource = source
 		info.ClaudeAvailable = true
 	}
-	codexPath, codexSource, codexErr := resolveCodexForEnv(agentEnv(os.Environ(), config))
+	codexPath, codexSource, codexErr := resolveCodexForEnv(env)
 	if codexErr != nil {
 		info.CodexError = codexErr.Error()
 	} else {
@@ -993,19 +1096,28 @@ func ResolveRuntimeInfo(config AgentConfig) AgentRuntimeInfo {
 
 func resolveCodexForEnv(env []string) (string, string, error) {
 	if explicit := strings.TrimSpace(envValueFromList(env, "KUBETRAIL_AGENT_PATH_TO_CODEX")); explicit != "" {
-		path := resolveConfiguredExecutablePath(explicit)
+		path := resolveConfiguredExecutablePathForEnv(explicit, env)
 		if isExecutableFile(path) {
 			return path, "configured", nil
 		}
 		return "", "configured", fmt.Errorf("Codex CLI 路径不可执行或不存在: %s", path)
 	}
-	if path, source, err := findCodexExecutable(); err == nil {
+	if path, source, err := findCodexExecutableForEnv(env); err == nil {
 		return path, source, nil
 	}
 	if findBundle() != "" {
 		return "", "", fmt.Errorf("找不到 Codex CLI；请安装 codex 并确保它在 PATH 中，或设置 KUBETRAIL_AGENT_PATH_TO_CODEX")
 	}
 	return "bundled @openai/codex-sdk", "sdk", nil
+}
+
+func findCodexExecutableForEnv(env []string) (string, string, error) {
+	for _, name := range codexExecutableNames() {
+		if p, ok := lookPathInEnv(name, env); ok {
+			return normalizeExecutablePath(p), "PATH", nil
+		}
+	}
+	return findCodexExecutable()
 }
 
 func findCodexExecutable() (string, string, error) {
@@ -1092,13 +1204,92 @@ func appendCodexNames(candidates []string, dir string) []string {
 	return candidates
 }
 
+func ensureCodexVendorPath(env []string, codexPath string) []string {
+	for _, dir := range codexVendorPathCandidates(codexPath) {
+		env = appendPathDir(env, dir)
+	}
+	return env
+}
+
+func codexVendorPathCandidates(codexPath string) []string {
+	var candidates []string
+	seen := map[string]bool{}
+	add := func(path string) {
+		path = normalizeExecutablePath(path)
+		if path == "" || seen[path] || !dirExists(path) {
+			return
+		}
+		seen[path] = true
+		candidates = append(candidates, path)
+	}
+	addGlob := func(pattern string) {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			return
+		}
+		sort.Strings(matches)
+		for _, match := range matches {
+			add(match)
+		}
+	}
+
+	paths := []string{normalizeExecutablePath(codexPath)}
+	if realPath, err := filepath.EvalSymlinks(paths[0]); err == nil && realPath != "" && realPath != paths[0] {
+		paths = append(paths, realPath)
+	}
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		if filepath.Base(filepath.Dir(path)) == "bin" {
+			add(filepath.Join(filepath.Dir(filepath.Dir(path)), "codex-path"))
+		}
+		packageRoot := filepath.Dir(filepath.Dir(path))
+		addGlob(filepath.Join(packageRoot, "node_modules", "@openai", "codex-*", "vendor", "*", "codex-path"))
+		addGlob(filepath.Join(packageRoot, "vendor", "*", "codex-path"))
+	}
+	return candidates
+}
+
+func appendPathDir(env []string, dir string) []string {
+	dir = normalizeExecutablePath(dir)
+	if !dirExists(dir) {
+		return env
+	}
+	pathValue := envValueFromList(env, "PATH")
+	var parts []string
+	if strings.TrimSpace(pathValue) != "" {
+		for _, part := range filepath.SplitList(pathValue) {
+			if part != "" {
+				parts = append(parts, part)
+			}
+		}
+	}
+	for _, part := range parts {
+		if normalizeExecutablePath(part) == dir {
+			return env
+		}
+	}
+	parts = append(parts, dir)
+	return appendEnv(env, "PATH", strings.Join(parts, string(os.PathListSeparator)))
+}
+
 func resolveClaudeForEnv(env []string) (string, string, error) {
 	if explicit := strings.TrimSpace(envValueFromList(env, "KUBETRAIL_AGENT_PATH_TO_CLAUDE")); explicit != "" {
-		path := resolveConfiguredExecutablePath(explicit)
+		path := resolveConfiguredExecutablePathForEnv(explicit, env)
 		if isExecutableFile(path) {
 			return path, "configured", nil
 		}
 		return "", "configured", fmt.Errorf("Claude CLI 路径不可执行或不存在: %s", path)
+	}
+	return findClaudeExecutableForEnv(env)
+}
+
+func findClaudeExecutableForEnv(env []string) (string, string, error) {
+	for _, name := range claudeExecutableNames() {
+		if p, ok := lookPathInEnv(name, env); ok {
+			return normalizeExecutablePath(p), "PATH", nil
+		}
 	}
 	return findClaudeExecutable()
 }
@@ -1214,8 +1405,15 @@ func normalizeExecutablePath(path string) string {
 }
 
 func resolveConfiguredExecutablePath(path string) string {
+	return resolveConfiguredExecutablePathForEnv(path, nil)
+}
+
+func resolveConfiguredExecutablePathForEnv(path string, env []string) string {
 	path = strings.TrimSpace(path)
 	if path != "" && !filepath.IsAbs(path) && !strings.ContainsAny(path, `/\`) {
+		if resolved, ok := lookPathInEnv(path, env); ok {
+			return normalizeExecutablePath(resolved)
+		}
 		if resolved, err := exec.LookPath(path); err == nil {
 			return normalizeExecutablePath(resolved)
 		}
@@ -1223,9 +1421,61 @@ func resolveConfiguredExecutablePath(path string) string {
 	return normalizeExecutablePath(path)
 }
 
+func lookPathInEnv(name string, env []string) (string, bool) {
+	name = strings.TrimSpace(name)
+	if name == "" || strings.ContainsAny(name, `/\`) {
+		return "", false
+	}
+	pathValue := envValueFromList(env, "PATH")
+	if strings.TrimSpace(pathValue) == "" {
+		return "", false
+	}
+	for _, dir := range filepath.SplitList(pathValue) {
+		if dir == "" {
+			dir = "."
+		}
+		for _, candidateName := range executableNameCandidates(name, env) {
+			path := filepath.Join(dir, candidateName)
+			if isExecutableFile(path) {
+				return path, true
+			}
+		}
+	}
+	return "", false
+}
+
+func executableNameCandidates(name string, env []string) []string {
+	if runtime.GOOS != "windows" || filepath.Ext(name) != "" {
+		return []string{name}
+	}
+	pathExt := envValueFromList(env, "PATHEXT")
+	if strings.TrimSpace(pathExt) == "" {
+		pathExt = ".COM;.EXE;.BAT;.CMD"
+	}
+	var candidates []string
+	for _, ext := range strings.Split(pathExt, ";") {
+		ext = strings.TrimSpace(ext)
+		if ext == "" {
+			continue
+		}
+		if !strings.HasPrefix(ext, ".") {
+			ext = "." + ext
+		}
+		candidates = append(candidates, name+ext)
+	}
+	return append([]string{name}, candidates...)
+}
+
 var nodeOnce sync.Once
 var nodeCached string
 var nodeErr error
+
+func resolveNodeForEnv(env []string) (string, error) {
+	if p, ok := lookPathInEnv("node", env); ok {
+		return normalizeExecutablePath(p), nil
+	}
+	return resolveNode()
+}
 
 func resolveNode() (string, error) {
 	nodeOnce.Do(func() {
@@ -1257,6 +1507,13 @@ func resolveNode() (string, error) {
 var npxOnce sync.Once
 var npxCached string
 var npxErr error
+
+func resolveNpxForEnv(env []string) (string, error) {
+	if p, ok := lookPathInEnv("npx", env); ok {
+		return normalizeExecutablePath(p), nil
+	}
+	return resolveNpx()
+}
 
 func resolveNpx() (string, error) {
 	npxOnce.Do(func() {
@@ -1337,7 +1594,7 @@ func dirExists(path string) bool {
 }
 
 func ensureNodeInPath(env []string) []string {
-	nodePath, err := resolveNode()
+	nodePath, err := resolveNodeForEnv(env)
 	if err != nil {
 		return env
 	}
