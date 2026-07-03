@@ -19,14 +19,25 @@ import (
 )
 
 type AgentConfig struct {
-	Provider         string            `json:"provider,omitempty"`
-	APIKey           string            `json:"apiKey"`
+	Provider         string                         `json:"provider,omitempty"`
+	APIKey           string                         `json:"apiKey"`
+	BaseURL          string                         `json:"baseUrl,omitempty"`
+	Model            string                         `json:"model,omitempty"`
+	AllowMaterialize bool                           `json:"allowMaterialize"`
+	Proxy            string                         `json:"proxy,omitempty"`
+	ClaudePath       string                         `json:"claudePath,omitempty"`
+	CodexPath        string                         `json:"codexPath,omitempty"`
+	CustomEnv        map[string]string              `json:"customEnv,omitempty"`
+	MCPServers       []MCPServerConfig              `json:"mcpServers,omitempty"`
+	ProviderConfigs  map[string]AgentProviderConfig `json:"providerConfigs,omitempty"`
+}
+
+type AgentProviderConfig struct {
+	APIKey           string            `json:"apiKey,omitempty"`
 	BaseURL          string            `json:"baseUrl,omitempty"`
 	Model            string            `json:"model,omitempty"`
 	AllowMaterialize bool              `json:"allowMaterialize"`
 	Proxy            string            `json:"proxy,omitempty"`
-	ClaudePath       string            `json:"claudePath,omitempty"`
-	CodexPath        string            `json:"codexPath,omitempty"`
 	CustomEnv        map[string]string `json:"customEnv,omitempty"`
 	MCPServers       []MCPServerConfig `json:"mcpServers,omitempty"`
 }

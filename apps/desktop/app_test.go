@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -131,6 +132,99 @@ func TestTestAgentConnectionCodexOfficialModeAcceptsConfiguredRuntime(t *testing
 	}
 	if !strings.Contains(msg, "Codex 官方模式可用") || !strings.Contains(msg, codexPath) {
 		t.Fatalf("unexpected message: %q", msg)
+	}
+}
+
+func TestSaveAgentConfigSeparatesProviderScopedConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	app := &App{}
+
+	if _, err := app.saveAgentConfig(agentmgr.AgentConfig{
+		Provider:         "claude",
+		APIKey:           "claude-key",
+		BaseURL:          "https://anthropic.example.test",
+		Model:            "claude-model",
+		Proxy:            "http://claude-proxy.example.test",
+		AllowMaterialize: true,
+		ClaudePath:       "/opt/claude",
+		CodexPath:        "/opt/codex",
+		CustomEnv:        map[string]string{"CLAUDE_ONLY": "1"},
+		MCPServers: []agentmgr.MCPServerConfig{{
+			Name:    "claude-filesystem",
+			Type:    "stdio",
+			Command: "npx",
+			Args:    []string{"claude-server"},
+		}},
+	}); err != nil {
+		t.Fatalf("save Claude config failed: %v", err)
+	}
+	if _, err := app.saveAgentConfig(agentmgr.AgentConfig{
+		Provider:   "codex",
+		APIKey:     "codex-key",
+		BaseURL:    "https://openai.example.test",
+		Model:      "codex-model",
+		Proxy:      "http://codex-proxy.example.test",
+		ClaudePath: "/opt/claude",
+		CodexPath:  "/opt/codex",
+		CustomEnv:  map[string]string{"CODEX_ONLY": "1"},
+		MCPServers: []agentmgr.MCPServerConfig{{
+			Name:    "codex-filesystem",
+			Type:    "stdio",
+			Command: "npx",
+			Args:    []string{"codex-server"},
+		}},
+	}); err != nil {
+		t.Fatalf("save Codex config failed: %v", err)
+	}
+
+	cfg := app.loadFullAgentConfig()
+	if cfg.Provider != "codex" || cfg.APIKey != "codex-key" || cfg.Model != "codex-model" {
+		t.Fatalf("expected active Codex config, got %#v", cfg)
+	}
+	claudeCfg := cfg.ProviderConfigs["claude"]
+	if claudeCfg.APIKey != "claude-key" || claudeCfg.Model != "claude-model" {
+		t.Fatalf("Claude config was overwritten: %#v", claudeCfg)
+	}
+	if !claudeCfg.AllowMaterialize {
+		t.Fatal("expected Claude allowMaterialize to be preserved")
+	}
+	if len(claudeCfg.MCPServers) != 1 || claudeCfg.MCPServers[0].Name != "claude-filesystem" {
+		t.Fatalf("Claude MCP servers were overwritten: %#v", claudeCfg.MCPServers)
+	}
+	codexCfg := cfg.ProviderConfigs["codex"]
+	if codexCfg.APIKey != "codex-key" || codexCfg.CustomEnv["CODEX_ONLY"] != "1" {
+		t.Fatalf("Codex config was not saved: %#v", codexCfg)
+	}
+}
+
+func TestLoadFullAgentConfigMigratesLegacyProviderConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	app := &App{}
+	if err := os.MkdirAll(filepath.Dir(app.agentConfigPath()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacy := []byte(`{"provider":"codex","apiKey":"codex-key","model":"codex-model","language":"zh-CN"}`)
+	if err := os.WriteFile(app.agentConfigPath(), legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := app.loadFullAgentConfig()
+	if cfg.Provider != "codex" || cfg.ProviderConfigs["codex"].APIKey != "codex-key" {
+		t.Fatalf("legacy config was not migrated: %#v", cfg)
+	}
+	data, err := os.ReadFile(app.agentConfigPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := raw["language"]; ok {
+		t.Fatalf("expected language to be removed during migration: %s", string(data))
+	}
+	if _, ok := raw["providerConfigs"]; !ok {
+		t.Fatalf("expected providerConfigs after migration: %s", string(data))
 	}
 }
 

@@ -848,10 +848,11 @@ func (a *App) DeleteScanResult(scanID string) {
 // ==================== Agent ====================
 
 func (a *App) ConfigureAgent(config agentmgr.AgentConfig) error {
-	if err := a.saveAgentConfig(config); err != nil {
+	cfg, err := a.saveAgentConfig(config)
+	if err != nil {
 		return err
 	}
-	return a.agentMgr.Start(config)
+	return a.agentMgr.Start(cfg)
 }
 
 func (a *App) GetAgentStatus() agentmgr.AgentStatus {
@@ -1270,7 +1271,8 @@ func (a *App) SaveKubeconfigFile(data *kube.KubeconfigResult) error {
 // ==================== Agent Config ====================
 
 func (a *App) SaveAgentConfigOnly(config agentmgr.AgentConfig) error {
-	return a.saveAgentConfig(config)
+	_, err := a.saveAgentConfig(config)
+	return err
 }
 
 func (a *App) TestAgentConnection(config agentmgr.AgentConfig) (string, error) {
@@ -1376,15 +1378,33 @@ func (a *App) agentConfigPath() string {
 	return filepath.Join(home, ".kubetrail", agentConfigFile)
 }
 
-func (a *App) saveAgentConfig(config agentmgr.AgentConfig) error {
-	data, err := json.MarshalIndent(config, "", "  ")
+func (a *App) saveAgentConfig(config agentmgr.AgentConfig) (agentmgr.AgentConfig, error) {
+	stored := a.loadFullAgentConfig()
+	provider := normalizeStoredAgentProvider(config.Provider)
+	if stored.ProviderConfigs == nil {
+		stored.ProviderConfigs = map[string]agentmgr.AgentProviderConfig{}
+	}
+	for name, providerConfig := range config.ProviderConfigs {
+		normalized := normalizeStoredAgentProvider(name)
+		stored.ProviderConfigs[normalized] = normalizeProviderAgentConfig(providerConfig)
+	}
+	stored.Provider = provider
+	stored.ClaudePath = strings.TrimSpace(config.ClaudePath)
+	stored.CodexPath = strings.TrimSpace(config.CodexPath)
+	stored.ProviderConfigs[provider] = providerAgentConfigFromAgentConfig(config)
+	flattened := flattenAgentConfigForProvider(stored, provider)
+
+	data, err := json.MarshalIndent(flattened, "", "  ")
 	if err != nil {
-		return err
+		return agentmgr.AgentConfig{}, err
 	}
 	if err := os.MkdirAll(filepath.Dir(a.agentConfigPath()), 0o700); err != nil {
-		return err
+		return agentmgr.AgentConfig{}, err
 	}
-	return os.WriteFile(a.agentConfigPath(), data, 0o600)
+	if err := os.WriteFile(a.agentConfigPath(), data, 0o600); err != nil {
+		return agentmgr.AgentConfig{}, err
+	}
+	return flattened, nil
 }
 
 func (a *App) loadAgentConfig() {
@@ -1401,24 +1421,142 @@ func (a *App) loadFullAgentConfig() agentmgr.AgentConfig {
 	}
 	var cfg agentmgr.AgentConfig
 	json.Unmarshal(data, &cfg)
-	a.migrateAgentConfig(data)
+	cfg = normalizePersistedAgentConfig(cfg)
+	a.migrateAgentConfig(data, cfg)
 	return cfg
 }
 
-func (a *App) migrateAgentConfig(data []byte) {
+func (a *App) migrateAgentConfig(data []byte, normalized agentmgr.AgentConfig) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return
 	}
-	if _, ok := raw["language"]; !ok {
+	_, hasLanguage := raw["language"]
+	_, hasProviderConfigs := raw["providerConfigs"]
+	if !hasLanguage && hasProviderConfigs {
 		return
 	}
 	delete(raw, "language")
-	cleaned, err := json.MarshalIndent(raw, "", "  ")
+	cleaned, err := json.MarshalIndent(normalized, "", "  ")
 	if err != nil {
 		return
 	}
 	_ = os.WriteFile(a.agentConfigPath(), cleaned, 0o600)
+}
+
+func normalizePersistedAgentConfig(config agentmgr.AgentConfig) agentmgr.AgentConfig {
+	provider := normalizeStoredAgentProvider(config.Provider)
+	out := agentmgr.AgentConfig{
+		Provider:        provider,
+		ClaudePath:      strings.TrimSpace(config.ClaudePath),
+		CodexPath:       strings.TrimSpace(config.CodexPath),
+		ProviderConfigs: normalizeProviderConfigMap(config.ProviderConfigs),
+	}
+	if len(out.ProviderConfigs) == 0 {
+		out.ProviderConfigs = map[string]agentmgr.AgentProviderConfig{}
+	}
+	if _, ok := out.ProviderConfigs[provider]; !ok {
+		out.ProviderConfigs[provider] = providerAgentConfigFromAgentConfig(config)
+	}
+	return flattenAgentConfigForProvider(out, provider)
+}
+
+func flattenAgentConfigForProvider(config agentmgr.AgentConfig, provider string) agentmgr.AgentConfig {
+	provider = normalizeStoredAgentProvider(provider)
+	out := agentmgr.AgentConfig{
+		Provider:        provider,
+		ClaudePath:      strings.TrimSpace(config.ClaudePath),
+		CodexPath:       strings.TrimSpace(config.CodexPath),
+		ProviderConfigs: normalizeProviderConfigMap(config.ProviderConfigs),
+	}
+	providerConfig := out.ProviderConfigs[provider]
+	out.APIKey = strings.TrimSpace(providerConfig.APIKey)
+	out.BaseURL = strings.TrimSpace(providerConfig.BaseURL)
+	out.Model = strings.TrimSpace(providerConfig.Model)
+	out.Proxy = strings.TrimSpace(providerConfig.Proxy)
+	out.AllowMaterialize = providerConfig.AllowMaterialize
+	out.CustomEnv = cloneStringMap(providerConfig.CustomEnv)
+	out.MCPServers = cloneMCPServers(providerConfig.MCPServers)
+	return out
+}
+
+func providerAgentConfigFromAgentConfig(config agentmgr.AgentConfig) agentmgr.AgentProviderConfig {
+	return normalizeProviderAgentConfig(agentmgr.AgentProviderConfig{
+		APIKey:           config.APIKey,
+		BaseURL:          config.BaseURL,
+		Model:            config.Model,
+		AllowMaterialize: config.AllowMaterialize,
+		Proxy:            config.Proxy,
+		CustomEnv:        config.CustomEnv,
+		MCPServers:       config.MCPServers,
+	})
+}
+
+func normalizeProviderConfigMap(configs map[string]agentmgr.AgentProviderConfig) map[string]agentmgr.AgentProviderConfig {
+	if len(configs) == 0 {
+		return map[string]agentmgr.AgentProviderConfig{}
+	}
+	out := make(map[string]agentmgr.AgentProviderConfig, len(configs))
+	for name, config := range configs {
+		out[normalizeStoredAgentProvider(name)] = normalizeProviderAgentConfig(config)
+	}
+	return out
+}
+
+func normalizeProviderAgentConfig(config agentmgr.AgentProviderConfig) agentmgr.AgentProviderConfig {
+	return agentmgr.AgentProviderConfig{
+		APIKey:           strings.TrimSpace(config.APIKey),
+		BaseURL:          strings.TrimSpace(config.BaseURL),
+		Model:            strings.TrimSpace(config.Model),
+		AllowMaterialize: config.AllowMaterialize,
+		Proxy:            strings.TrimSpace(config.Proxy),
+		CustomEnv:        cloneStringMap(config.CustomEnv),
+		MCPServers:       cloneMCPServers(config.MCPServers),
+	}
+}
+
+func normalizeStoredAgentProvider(provider string) string {
+	if strings.EqualFold(strings.TrimSpace(provider), "codex") {
+		return "codex"
+	}
+	return "claude"
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key != "" && value != "" {
+			out[key] = value
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func cloneMCPServers(servers []agentmgr.MCPServerConfig) []agentmgr.MCPServerConfig {
+	if len(servers) == 0 {
+		return nil
+	}
+	out := make([]agentmgr.MCPServerConfig, 0, len(servers))
+	for _, server := range servers {
+		cloned := server
+		cloned.Name = strings.TrimSpace(cloned.Name)
+		cloned.Type = strings.TrimSpace(cloned.Type)
+		cloned.Command = strings.TrimSpace(cloned.Command)
+		cloned.URL = strings.TrimSpace(cloned.URL)
+		cloned.Args = append([]string(nil), server.Args...)
+		cloned.Env = cloneStringMap(server.Env)
+		cloned.Headers = cloneStringMap(server.Headers)
+		out = append(out, cloned)
+	}
+	return out
 }
 
 func (a *App) OpenExternalURL(url string) {

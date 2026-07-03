@@ -6,7 +6,9 @@ import { currentLocale, setLocale, t, type Locale } from '../i18n'
 
 const agentStore = useAgentStore()
 
-const provider = ref<'claude' | 'codex'>('claude')
+type AgentProvider = 'claude' | 'codex'
+
+const provider = ref<AgentProvider>('claude')
 const language = ref<Locale>(currentLocale.value)
 const apiKey = ref('')
 const baseUrl = ref('')
@@ -26,6 +28,11 @@ const mcpServers = ref<McpServerForm[]>([])
 const editingMcpIndex = ref(-1)
 const mcpDraft = ref<McpServerForm>(emptyMcpDraft())
 const activeTab = ref('agent')
+const loadingConfig = ref(false)
+const providerConfigs = ref<Record<AgentProvider, ProviderScopedConfig>>({
+  claude: emptyProviderConfig(),
+  codex: emptyProviderConfig(),
+})
 
 type McpServerForm = {
   name: string
@@ -39,23 +46,33 @@ type McpServerForm = {
   alwaysLoad: boolean
 }
 
+type ProviderScopedConfig = {
+  apiKey: string
+  baseUrl: string
+  model: string
+  proxy: string
+  allowMaterialize: boolean
+  customEnvText: string
+  mcpServers: McpServerForm[]
+}
+
 onMounted(async () => {
   try {
     const status = await api.GetAgentStatus()
     agentStore.setStatus(status as any)
     const cfg = await api.GetAgentDisplayConfig()
     if (cfg) {
-      provider.value = ((cfg as any).provider === 'codex' ? 'codex' : 'claude')
-      apiKey.value = (cfg as any).apiKey || ''
-      baseUrl.value = (cfg as any).baseUrl || ''
-      model.value = (cfg as any).model || ''
-      proxy.value = (cfg as any).proxy || ''
-      claudePath.value = (cfg as any).claudePath || ''
-      codexPath.value = (cfg as any).codexPath || ''
-      allowMaterialize.value = (cfg as any).allowMaterialize || false
-      const envMap = (cfg as any).customEnv
-      customEnvText.value = envMap && typeof envMap === 'object' && Object.keys(envMap).length ? JSON.stringify(envMap, null, 2) : ''
-      mcpServers.value = Array.isArray((cfg as any).mcpServers) ? (cfg as any).mcpServers.map(mcpServerToForm).filter(Boolean) : []
+      loadingConfig.value = true
+      try {
+        const loadedProvider = normalizeProviderName((cfg as any).provider)
+        providerConfigs.value = loadProviderConfigs(cfg as any, loadedProvider)
+        provider.value = loadedProvider
+        claudePath.value = (cfg as any).claudePath || ''
+        codexPath.value = (cfg as any).codexPath || ''
+        applyProviderDraft(loadedProvider)
+      } finally {
+        loadingConfig.value = false
+      }
     }
   } catch {}
   refreshRuntimeInfo()
@@ -66,38 +83,37 @@ watch(language, (value) => {
   setLocale(value)
 })
 
+watch(provider, (value, previous) => {
+  if (loadingConfig.value || value === previous) return
+  if (previous) saveCurrentProviderDraft(previous)
+  applyProviderDraft(value)
+  resetMcpDraft()
+  testResult.value = null
+})
+
 function buildConfig(): any {
+  const currentProvider = provider.value
+  saveCurrentProviderDraft(currentProvider)
+  const scopedConfigs = providerConfigsForSave()
+  scopedConfigs[currentProvider].mcpServers = mcpServersForSave(mcpServers.value, true)
+  const activeConfig = scopedConfigs[currentProvider]
   return {
-    provider: provider.value,
-    apiKey: apiKey.value,
-    baseUrl: baseUrl.value,
-    model: model.value,
-    proxy: proxy.value,
+    provider: currentProvider,
+    apiKey: activeConfig.apiKey,
+    baseUrl: activeConfig.baseUrl,
+    model: activeConfig.model,
+    proxy: activeConfig.proxy,
     claudePath: claudePath.value,
     codexPath: codexPath.value,
-    allowMaterialize: allowMaterialize.value,
-    customEnv: parseObjectText(customEnvText.value.trim(), t('自定义环境变量')),
-    mcpServers: mcpServersForSave(),
+    allowMaterialize: activeConfig.allowMaterialize,
+    customEnv: activeConfig.customEnv,
+    mcpServers: activeConfig.mcpServers,
+    providerConfigs: scopedConfigs,
   }
 }
 
-function defaultModelForProvider(value: 'claude' | 'codex'): string {
+function defaultModelForProvider(value: AgentProvider): string {
   return value === 'codex' ? t('留空使用 Codex 默认模型') : t('留空使用 Claude Code 默认模型')
-}
-
-function onProviderChange(value: 'claude' | 'codex') {
-  const oldDefaults = new Set([
-    'claude-sonnet-4-6',
-    'gpt-5.4',
-    '留空使用 Codex 默认模型',
-    '留空使用 Claude Code 默认模型',
-    'Leave empty to use the Codex default model',
-    'Leave empty to use the Claude Code default model',
-  ])
-  if (!model.value.trim() || oldDefaults.has(model.value.trim())) {
-    model.value = ''
-  }
-  void value
 }
 
 function emptyMcpDraft(): McpServerForm {
@@ -112,6 +128,102 @@ function emptyMcpDraft(): McpServerForm {
     timeout: 0,
     alwaysLoad: false,
   }
+}
+
+function emptyProviderConfig(): ProviderScopedConfig {
+  return {
+    apiKey: '',
+    baseUrl: '',
+    model: '',
+    proxy: '',
+    allowMaterialize: false,
+    customEnvText: '',
+    mcpServers: [],
+  }
+}
+
+function normalizeProviderName(value: unknown): AgentProvider {
+  return String(value || '').trim().toLowerCase() === 'codex' ? 'codex' : 'claude'
+}
+
+function loadProviderConfigs(raw: any, activeProvider: AgentProvider): Record<AgentProvider, ProviderScopedConfig> {
+  const configs = {
+    claude: emptyProviderConfig(),
+    codex: emptyProviderConfig(),
+  }
+  const rawConfigs = raw?.providerConfigs
+  if (rawConfigs && typeof rawConfigs === 'object') {
+    configs.claude = providerConfigFromPayload(rawConfigs.claude)
+    configs.codex = providerConfigFromPayload(rawConfigs.codex)
+  }
+  if (!rawConfigs?.[activeProvider]) {
+    configs[activeProvider] = providerConfigFromPayload(raw)
+  }
+  return configs
+}
+
+function providerConfigFromPayload(raw: any): ProviderScopedConfig {
+  const source = raw && typeof raw === 'object' ? raw : {}
+  const envMap = source.customEnv
+  return {
+    apiKey: String(source.apiKey || ''),
+    baseUrl: String(source.baseUrl || ''),
+    model: String(source.model || ''),
+    proxy: String(source.proxy || ''),
+    allowMaterialize: Boolean(source.allowMaterialize),
+    customEnvText: envMap && typeof envMap === 'object' && Object.keys(envMap).length ? JSON.stringify(envMap, null, 2) : '',
+    mcpServers: Array.isArray(source.mcpServers) ? source.mcpServers.map(mcpServerToForm).filter(Boolean) : [],
+  }
+}
+
+function saveCurrentProviderDraft(value: AgentProvider = provider.value) {
+  providerConfigs.value = {
+    ...providerConfigs.value,
+    [value]: {
+      apiKey: apiKey.value,
+      baseUrl: baseUrl.value,
+      model: model.value,
+      proxy: proxy.value,
+      allowMaterialize: allowMaterialize.value,
+      customEnvText: customEnvText.value,
+      mcpServers: mcpServers.value.map(cloneMcpServerForm),
+    },
+  }
+}
+
+function applyProviderDraft(value: AgentProvider) {
+  const config = providerConfigs.value[value] || emptyProviderConfig()
+  apiKey.value = config.apiKey
+  baseUrl.value = config.baseUrl
+  model.value = config.model
+  proxy.value = config.proxy
+  allowMaterialize.value = config.allowMaterialize
+  customEnvText.value = config.customEnvText
+  mcpServers.value = config.mcpServers.map(cloneMcpServerForm)
+}
+
+function providerConfigsForSave(): Record<AgentProvider, any> {
+  return {
+    claude: providerConfigPayload('claude'),
+    codex: providerConfigPayload('codex'),
+  }
+}
+
+function providerConfigPayload(value: AgentProvider): any {
+  const config = providerConfigs.value[value] || emptyProviderConfig()
+  return {
+    apiKey: config.apiKey,
+    baseUrl: config.baseUrl,
+    model: config.model,
+    proxy: config.proxy,
+    allowMaterialize: config.allowMaterialize,
+    customEnv: parseObjectText(config.customEnvText, `${value} ${t('自定义环境变量')}`),
+    mcpServers: mcpServersForSave(config.mcpServers, false),
+  }
+}
+
+function cloneMcpServerForm(form: McpServerForm): McpServerForm {
+  return { ...form }
 }
 
 function mcpServerToForm(server: any): McpServerForm | null {
@@ -164,9 +276,9 @@ function hasMcpDraftContent(form: McpServerForm): boolean {
   )
 }
 
-function mcpServersForSave(): any[] {
-  const forms = mcpServers.value.map(item => ({ ...item }))
-  if (hasMcpDraftContent(mcpDraft.value)) {
+function mcpServersForSave(source: McpServerForm[] = mcpServers.value, includeDraft = true): any[] {
+  const forms = source.map(cloneMcpServerForm)
+  if (includeDraft && hasMcpDraftContent(mcpDraft.value)) {
     const server = formToMcpServer(mcpDraft.value)
     if (!server) {
       throw new Error(t('请先补全当前 MCP 草稿，或点击清空后再保存'))
@@ -337,7 +449,6 @@ async function refreshLogs() {
                   { label: 'Claude Code', value: 'claude' },
                   { label: 'Codex', value: 'codex' },
                 ]"
-                @change="onProviderChange"
               />
             </el-form-item>
             <el-form-item label="API Key">
