@@ -17,11 +17,11 @@
 
 KubeTrail 是一个面向 Kubernetes 授权红队评估与防御验证的容器内态势感知、攻击面发现和 AI 辅助攻防编排工具。它从 Pod 内或受控测试环境收集本地环境、ServiceAccount、Kubernetes API 权限、逃逸面、凭据痕迹和云元数据等证据，输出结构化 JSON，供客户端后续审计、复盘、交互式分析、EXP 验证计划、报告生成以及受控动态攻击验证使用。
 
-## Usage Video
+## 使用说明视频和案例
 
-<video src="./kubetrail_readme_demo.mp4" controls width="100%" muted>
-  你的浏览器不支持视频播放，请直接打开 kubetrail_readme_demo.mp4 查看。
-</video>
+<a href="./kubetrail_readme_demo.mp4">
+  <img src="./kubetrail_readme_demo.png" alt="KubeTrail 使用说明视频和案例" width="100%">
+</a>
 
 ## 主要特性
 

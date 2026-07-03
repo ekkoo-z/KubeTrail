@@ -19,9 +19,9 @@ KubeTrail is an in-pod Kubernetes situational awareness, attack-surface discover
 
 ## Usage Video and Case Study
 
-<video src="./kubetrail_readme_demo.mp4" controls width="100%" muted>
-  Your browser does not support video playback. Open kubetrail_readme_demo.mp4 directly to view it.
-</video>
+<a href="./kubetrail_readme_demo.mp4">
+  <img src="./kubetrail_readme_demo.png" alt="KubeTrail usage video and case study" width="100%">
+</a>
 
 ## Key Features
 
