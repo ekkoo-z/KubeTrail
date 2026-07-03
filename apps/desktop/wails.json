@@ -9,5 +9,8 @@
   "author": {
     "name": "KubeTrail contributors",
     "email": "security@example.com"
+  },
+  "info": {
+    "productVersion": "0.1.1"
   }
 }

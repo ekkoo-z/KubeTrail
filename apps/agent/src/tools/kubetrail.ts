@@ -37,7 +37,7 @@ export function createKubeTrailMcpServer(store: KubeTrailContextStore, config: A
   const definitions = createKubeTrailToolDefinitions(store, config);
   return createSdkMcpServer({
     name: "kubetrail",
-    version: "0.1.0",
+    version: "0.1.1",
     alwaysLoad: true,
     tools: definitions.map((definition) =>
       tool(
@@ -56,7 +56,7 @@ export async function runKubeTrailMcpStdio(config: AgentRuntimeConfig): Promise<
   const server = new McpServer(
     {
       name: "kubetrail",
-      version: "0.1.0",
+      version: "0.1.1",
     },
     {
       instructions: [

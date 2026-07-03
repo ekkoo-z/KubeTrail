@@ -579,7 +579,6 @@ export namespace kube {
 	}
 
 }
-
 export namespace main {
 	
 	export class ClusterDTO {

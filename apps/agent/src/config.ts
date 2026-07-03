@@ -204,7 +204,7 @@ export function buildClaudeEnv(config: AgentRuntimeConfig, inputPath = ""): Reco
   } else {
     delete env.CLAUDE_CONFIG_DIR;
   }
-  env.CLAUDE_AGENT_SDK_CLIENT_APP = "kubetrail-agent/0.1.0";
+  env.CLAUDE_AGENT_SDK_CLIENT_APP = "kubetrail-agent/0.1.1";
 
   if (config.enableGatewayModelDiscovery) {
     env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY = "1";
