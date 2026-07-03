@@ -90,6 +90,62 @@ func TestCollectPrettyOutput(t *testing.T) {
 	}
 }
 
+func TestCollectShowsServerUIAndModuleProgress(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	root := t.TempDir()
+	output := filepath.Join(root, "out.json")
+
+	code := Run([]string{"kubetrail-server", "--timeout", "2s", "--scan", "lpe", "--credential-sweep=false", "--output", output}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("collect failed with code %d: %s", code, stderr.String())
+	}
+
+	got := stderr.String()
+	for _, want := range []string{
+		"_  __",
+		"by ekkoo",
+		"https://github.com/ekkoo-z/KubeTrail",
+		"[scan] 检测模块",
+		"Identity",
+		"Local privilege escalation",
+		"[scan] 检测完成",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected stderr to contain %q, got %s", want, got)
+		}
+	}
+	for _, notWant := range []string{
+		"[01/",
+		"完成模块:",
+	} {
+		if strings.Contains(got, notWant) {
+			t.Fatalf("expected stderr not to contain %q, got %s", notWant, got)
+		}
+	}
+}
+
+func TestProgressDoesNotPolluteStdoutJSON(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := Run([]string{"kubetrail-server", "--timeout", "2s", "--scan", "lpe", "--credential-sweep=false", "--output", "-"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("collect failed with code %d: %s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "[scan] 检测模块") {
+		t.Fatalf("expected progress on stderr, got %s", stderr.String())
+	}
+
+	var doc map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+		t.Fatalf("stdout is not json: %v\n%s", err, stdout.String())
+	}
+	if doc["schemaVersion"] != "kubetrail.server/v1" {
+		t.Fatalf("unexpected schema version: %#v", doc["schemaVersion"])
+	}
+}
+
 func TestCollectShortFlags(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

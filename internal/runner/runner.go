@@ -12,15 +12,62 @@ import (
 	"k8s.io/client-go/rest"
 )
 
+const (
+	ProgressStarted  = "started"
+	ProgressFinished = "finished"
+)
+
+type ProgressEvent struct {
+	CollectorID string
+	Index       int
+	Total       int
+	Phase       string
+	Mode        model.Mode
+	SideEffects []string
+	Status      string
+	DurationMs  int64
+	FactCount   int
+	ErrorCount  int
+}
+
+type ProgressFunc func(ProgressEvent)
+
+type CollectorInfo struct {
+	ID          string
+	Mode        model.Mode
+	SideEffects []string
+}
+
+func CollectorPlan(opts model.Options) []CollectorInfo {
+	collectorList := collectors.ForOptions(opts)
+	plan := make([]CollectorInfo, 0, len(collectorList))
+	for _, collector := range collectorList {
+		plan = append(plan, CollectorInfo{
+			ID:          collector.ID(),
+			Mode:        collector.Mode(),
+			SideEffects: append([]string(nil), collector.SideEffects()...),
+		})
+	}
+	return plan
+}
+
 func Run(ctx context.Context, opts model.Options, version string) model.Document {
-	return run(ctx, collectors.NewContext(opts), opts, version)
+	return run(ctx, collectors.NewContext(opts), opts, version, nil)
+}
+
+func RunWithProgress(ctx context.Context, opts model.Options, version string, progress ProgressFunc) model.Document {
+	return run(ctx, collectors.NewContext(opts), opts, version, progress)
 }
 
 func RunWithKubeConfig(ctx context.Context, opts model.Options, version string, cfg *rest.Config, namespace string) model.Document {
-	return run(ctx, collectors.NewContextWithKubeConfig(opts, cfg, namespace), opts, version)
+	return run(ctx, collectors.NewContextWithKubeConfig(opts, cfg, namespace), opts, version, nil)
 }
 
-func run(ctx context.Context, cctx *collectors.Context, opts model.Options, version string) model.Document {
+func RunWithKubeConfigProgress(ctx context.Context, opts model.Options, version string, cfg *rest.Config, namespace string, progress ProgressFunc) model.Document {
+	return run(ctx, collectors.NewContextWithKubeConfig(opts, cfg, namespace), opts, version, progress)
+}
+
+func run(ctx context.Context, cctx *collectors.Context, opts model.Options, version string, progress ProgressFunc) model.Document {
 	start := time.Now()
 	hostname, _ := os.Hostname()
 
@@ -48,7 +95,8 @@ func run(ctx context.Context, cctx *collectors.Context, opts model.Options, vers
 		Target: target,
 	}
 
-	for _, collector := range collectors.ForOptions(opts) {
+	collectorList := collectors.ForOptions(opts)
+	for i, collector := range collectorList {
 		select {
 		case <-ctx.Done():
 			doc.Errors = append(doc.Errors, model.ErrorEntry{
@@ -59,7 +107,31 @@ func run(ctx context.Context, cctx *collectors.Context, opts model.Options, vers
 		default:
 		}
 
+		if progress != nil {
+			progress(ProgressEvent{
+				CollectorID: collector.ID(),
+				Index:       i + 1,
+				Total:       len(collectorList),
+				Phase:       ProgressStarted,
+				Mode:        collector.Mode(),
+				SideEffects: append([]string(nil), collector.SideEffects()...),
+			})
+		}
 		cr := runCollector(ctx, cctx, collector)
+		if progress != nil {
+			progress(ProgressEvent{
+				CollectorID: collector.ID(),
+				Index:       i + 1,
+				Total:       len(collectorList),
+				Phase:       ProgressFinished,
+				Mode:        collector.Mode(),
+				SideEffects: append([]string(nil), collector.SideEffects()...),
+				Status:      cr.Status,
+				DurationMs:  cr.DurationMs,
+				FactCount:   cr.FactCount,
+				ErrorCount:  len(cr.Errors),
+			})
+		}
 		doc.Facts = append(doc.Facts, cr.Facts...)
 		doc.Errors = append(doc.Errors, cr.Errors...)
 		cr.Facts = nil

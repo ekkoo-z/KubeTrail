@@ -18,6 +18,8 @@ import (
 
 var version = "dev"
 
+const projectURL = "https://github.com/ekkoo-z/KubeTrail"
+
 func Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) < 2 {
 		return runCollect(nil, stdout, stderr)
@@ -109,6 +111,11 @@ func runCollect(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
+	color := isTerminal(stderr)
+	renderServerUI(stderr, color)
+	printer := newScanPrinter(stderr)
+	printer.PrintPlan(runner.CollectorPlan(opts), opts.SATokenAuditOutput != "")
+
 	var audit *model.SATokenAuditDocument
 	if opts.SATokenAuditOutput != "" {
 		auditDoc := runner.RunServiceAccountTokenAudit(ctx, opts, version)
@@ -157,7 +164,7 @@ func runCollect(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	color := isTerminal(stderr)
+	printer.PrintSummary(doc, audit)
 	findings.Render(stderr, doc.Findings, color, output)
 
 	return 0
@@ -234,6 +241,111 @@ func isTerminal(w io.Writer) bool {
 		return stat.Mode()&os.ModeCharDevice != 0
 	}
 	return false
+}
+
+func renderServerUI(w io.Writer, color bool) {
+	const banner = ` _  __     _          _____          _ _
+| |/ /   _| |__   ___|_   _| __ __ _(_) |
+| ' /| | | | '_ \ / _ \ | || '__/ _` + "`" + ` | | |
+| . \| |_| | |_) |  __/ | || | | (_| | | |
+|_|\_\\__,_|_.__/ \___| |_||_|  \__,_|_|_|
+`
+	if color {
+		fmt.Fprintf(w, "\033[1;36m%s\033[0m", banner)
+		fmt.Fprintf(w, "\033[1;32mby ekkoo\033[0m \033[2m|\033[0m \033[1;35mGitHub:\033[0m \033[4;34m%s\033[0m\n\n", projectURL)
+	} else {
+		fmt.Fprint(w, banner)
+		fmt.Fprintf(w, "by ekkoo | GitHub: %s\n\n", projectURL)
+	}
+}
+
+type scanPrinter struct {
+	w io.Writer
+}
+
+func newScanPrinter(w io.Writer) *scanPrinter {
+	return &scanPrinter{w: w}
+}
+
+func (p *scanPrinter) PrintPlan(plan []runner.CollectorInfo, includeSATokenAudit bool) {
+	moduleNames := make([]string, 0, len(plan)+1)
+	if includeSATokenAudit {
+		moduleNames = append(moduleNames, "ServiceAccount token audit")
+	}
+	for _, item := range plan {
+		moduleNames = append(moduleNames, collectorDisplayName(item.ID))
+	}
+	fmt.Fprintf(p.w, "[scan] 检测模块 (%d): %s\n", len(moduleNames), strings.Join(moduleNames, ", "))
+	fmt.Fprintln(p.w, "[scan] 正在检测目标...")
+}
+
+func collectorDisplayName(id string) string {
+	switch id {
+	case "identity":
+		return "Identity"
+	case "environment":
+		return "Environment"
+	case "serviceaccount":
+		return "ServiceAccount"
+	case "proc":
+		return "Process"
+	case "proc_sys_escape":
+		return "Proc sys escape"
+	case "filesystem":
+		return "Filesystem"
+	case "node_local":
+		return "Node local"
+	case "runtime_local":
+		return "Runtime local"
+	case "lpe_local":
+		return "Local privilege escalation"
+	case "k8s_context":
+		return "Kubernetes context"
+	case "k8s_permissions":
+		return "Kubernetes permissions"
+	case "k8s_profile":
+		return "Kubernetes profile"
+	case "k8s_objects":
+		return "Kubernetes objects"
+	case "credential_sweep":
+		return "Credential sweep"
+	case "dns_services":
+		return "DNS services"
+	case "cloud_metadata":
+		return "Cloud metadata"
+	case "admission_dryrun":
+		return "Admission dry-run"
+	case "syscalls":
+		return "Syscalls"
+	default:
+		return id
+	}
+}
+
+func (p *scanPrinter) PrintSummary(doc model.Document, audit *model.SATokenAuditDocument) {
+	errorCount := len(doc.Errors)
+	extra := ""
+	if audit != nil {
+		errorCount += len(audit.Errors)
+		extra = fmt.Sprintf(" auditItems=%d", len(audit.Items))
+	}
+	fmt.Fprintf(
+		p.w,
+		"[scan] 检测完成: collectors=%d facts=%d findings=%d errors=%d duration=%s%s\n\n",
+		len(doc.Collectors),
+		len(doc.Facts),
+		len(doc.Findings),
+		errorCount,
+		formatDurationMillis(doc.Run.DurationMs),
+		extra,
+	)
+}
+
+func formatDurationMillis(ms int64) string {
+	if ms <= 0 {
+		return "0ms"
+	}
+	return (time.Duration(ms) * time.Millisecond).String()
 }
 
 func usage(w io.Writer) {
