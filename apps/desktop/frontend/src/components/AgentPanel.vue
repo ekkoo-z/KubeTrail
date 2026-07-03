@@ -440,6 +440,9 @@ async function sendMessage() {
       } else if (event.type === 'tool_use') {
         upsertTraceEntry(trace, traceKeyForTool(event), formatToolUseLabel(event.toolName, event.skillName, event.toolInput))
         scrollToBottom()
+      } else if (event.type === 'reasoning') {
+        upsertTraceEntry(trace, reasoningTraceKey(event), formatReasoningTrace(event))
+        scrollToBottom()
       } else if (event.type === 'assistant' && event.text) {
         if (!isHistoricalReplayText(event.text, historicalAssistantFingerprints)) {
           bufferedAssistantText = String(event.text || '').trim()
@@ -690,6 +693,11 @@ async function runAiSurfaceAnalysis() {
         aiAnalysisStatus.value = label
         upsertTraceEntry(trace, traceKeyForTool(event), label)
         scrollToBottom()
+      } else if (event.type === 'reasoning') {
+        const label = formatReasoningTrace(event)
+        aiAnalysisStatus.value = label
+        upsertTraceEntry(trace, reasoningTraceKey(event), label)
+        scrollToBottom()
       } else if (event.type === 'assistant' && event.text) {
         aiAnalysisStatus.value = currentLocale.value === 'en-US' ? 'Agent is generating analysis results...' : 'Agent 正在生成分析结果...'
         bufferedAnalysisText = String(event.text || '').trim()
@@ -879,6 +887,28 @@ function formatInitTrace(event: any): string {
   return currentLocale.value === 'en-US'
     ? `Runtime: ${provider} · ${model}; loaded skills: ${skillList}`
     : `运行环境: ${provider} · ${model}；加载 Skills: ${skillList}`
+}
+
+function formatReasoningTrace(event: any): string {
+  if (event?.subtype === 'thinking_tokens') {
+    const tokens = Number(event.estimatedTokens)
+    if (Number.isFinite(tokens) && tokens > 0) {
+      return currentLocale.value === 'en-US'
+        ? `Thinking in progress; about ${Math.round(tokens)} tokens`
+        : `思考中；约 ${Math.round(tokens)} tokens`
+    }
+    return currentLocale.value === 'en-US' ? 'Thinking in progress' : '思考中'
+  }
+  const text = truncateTraceText(String(event?.text || ''), 220)
+  if (!text) return currentLocale.value === 'en-US' ? 'Reasoning summary received' : '已收到推理摘要'
+  return event?.provider === 'codex'
+    ? (currentLocale.value === 'en-US' ? `Reasoning summary: ${text}` : `推理摘要: ${text}`)
+    : text
+}
+
+function reasoningTraceKey(event: any): string {
+  if (event?.subtype === 'thinking_tokens') return 'reasoning:thinking_tokens'
+  return `reasoning:${String(event?.provider || 'agent')}:${String(event?.subtype || 'summary')}`
 }
 
 function formatRuntimeTrace(event: any): string {

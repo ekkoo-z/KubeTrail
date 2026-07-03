@@ -19,6 +19,7 @@ import { createKubeTrailMcpServer, kubeTrailToolNames } from "./tools/kubetrail.
 export type AgentEvent =
   | { type: "init"; sessionId: string; model: string; tools: string[]; skills: string[]; provider?: string }
   | { type: "assistant"; text: string; error?: string }
+  | { type: "reasoning"; text: string; provider?: string; subtype?: string; estimatedTokens?: number; deltaTokens?: number }
   | { type: "tool_use"; toolName: string; toolInput: Record<string, unknown>; skillName?: string }
   | { type: "result"; sessionId: string; success: boolean; text: string; costUsd?: number; turns?: number }
   | { type: "system"; subtype?: string; text: string; estimatedTokens?: number; estimatedTokensDelta?: number; toolName?: string; elapsedSeconds?: number }
@@ -286,12 +287,15 @@ function toEvent(message: SDKMessage, enabledSkills: readonly string[] = []): Ag
     const subtype = "subtype" in message ? String(message.subtype) : undefined;
     if (subtype === "thinking_tokens") {
       const thinking = message as { estimated_tokens?: number; estimated_tokens_delta?: number };
+      const estimatedTokens = typeof thinking.estimated_tokens === "number" ? thinking.estimated_tokens : undefined;
+      const deltaTokens = typeof thinking.estimated_tokens_delta === "number" ? thinking.estimated_tokens_delta : undefined;
       return {
-        type: "system",
+        type: "reasoning",
+        provider: "claude",
         subtype,
-        text: "thinking",
-        estimatedTokens: thinking.estimated_tokens,
-        estimatedTokensDelta: thinking.estimated_tokens_delta,
+        estimatedTokens,
+        deltaTokens,
+        text: estimatedTokens === undefined ? "Thinking..." : `Thinking... ${estimatedTokens} estimated tokens`,
       };
     }
     if (subtype === "commands_changed") {
@@ -459,7 +463,7 @@ function codexEventToAgentEvents(event: ThreadEvent): AgentEvent[] {
 
 function codexItemToAgentEvents(item: ThreadItem, eventType: "item.started" | "item.updated" | "item.completed"): AgentEvent[] {
   if (item.type === "reasoning" && (eventType === "item.updated" || eventType === "item.completed") && item.text.trim()) {
-    return [{ type: "system", subtype: "reasoning", text: item.text.trim() }];
+    return [{ type: "reasoning", provider: "codex", subtype: "summary", text: item.text.trim() }];
   }
   if (item.type === "agent_message" && eventType === "item.completed" && item.text.trim()) {
     return [{ type: "assistant", text: item.text.trim() }];
