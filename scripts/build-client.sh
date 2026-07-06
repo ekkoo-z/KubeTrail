@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-ROOT="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 AGENT_DIR="$ROOT/apps/agent"
 DESKTOP_DIR="$ROOT/apps/desktop"
 DESKTOP_BIN="$DESKTOP_DIR/build/bin"

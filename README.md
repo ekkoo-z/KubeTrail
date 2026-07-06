@@ -43,18 +43,26 @@ KubeTrail 是一个面向 Kubernetes 授权红队评估与防御验证的容器�
 - 可选：本机 `claude` 或 `codex` CLI，用于桌面端调用本地 Agent SDK 运行时。
 
 ### 构建
-构建 release 包：
+构建服务端 release 包：
 
 ```bash
 ./scripts/build-release.sh
 ```
 
-release 脚本会运行 `go test ./...`，使用 `-trimpath`、`-buildvcs=false`、去除调试/符号信息并清空 Go build ID，然后生成多平台 `kubetrail-server-*` 和 `SHA256SUMS`。
+```powershell
+.\scripts\build-release.ps1
+```
+
+服务端 release 脚本会运行 `go test ./...`，使用 `-trimpath`、`-buildvcs=false`、去除调试/符号信息并清空 Go build ID，然后生成多平台 `kubetrail-server-*` 和 `SHA256SUMS`。需要 UPX 压缩构建时可使用 `./scripts/build-secure-upx.sh`。
 
 打包桌面端和 Agent 运行资源：
 
 ```bash
-./build.sh
+./scripts/build-client.sh
+```
+
+```powershell
+.\scripts\build-client.ps1
 ```
 
 ## 服务端参数

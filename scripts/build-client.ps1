@@ -1,6 +1,7 @@
 $ErrorActionPreference = "Stop"
 
-$Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$Root = (Resolve-Path (Join-Path $ScriptDir "..")).Path
 $AgentDir = Join-Path $Root "apps/agent"
 $DesktopDir = Join-Path $Root "apps/desktop"
 $DesktopBin = Join-Path $DesktopDir "build/bin"

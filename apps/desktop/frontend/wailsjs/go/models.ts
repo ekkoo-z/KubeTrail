@@ -1,5 +1,5 @@
 export namespace agentmgr {
-
+	
 	export class AgentProviderConfig {
 	    apiKey?: string;
 	    baseUrl?: string;
@@ -8,11 +8,11 @@ export namespace agentmgr {
 	    proxy?: string;
 	    customEnv?: Record<string, string>;
 	    mcpServers?: MCPServerConfig[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new AgentProviderConfig(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.apiKey = source["apiKey"];
@@ -23,7 +23,7 @@ export namespace agentmgr {
 	        this.customEnv = source["customEnv"];
 	        this.mcpServers = this.convertValues(source["mcpServers"], MCPServerConfig);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -52,11 +52,11 @@ export namespace agentmgr {
 	    headers?: Record<string, string>;
 	    timeout?: number;
 	    alwaysLoad?: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new MCPServerConfig(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -82,7 +82,7 @@ export namespace agentmgr {
 	    customEnv?: Record<string, string>;
 	    mcpServers?: MCPServerConfig[];
 	    providerConfigs?: Record<string, AgentProviderConfig>;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new AgentConfig(source);
 	    }
@@ -120,7 +120,7 @@ export namespace agentmgr {
 		    return a;
 		}
 	}
-
+	
 	export class AgentRuntimeInfo {
 	    nodePath?: string;
 	    nodeError?: string;
@@ -226,6 +226,7 @@ export namespace agentmgr {
 	}
 
 }
+
 export namespace kube {
 	
 	export class ClusterExtensionInfo {
@@ -579,6 +580,7 @@ export namespace kube {
 	}
 
 }
+
 export namespace main {
 	
 	export class ClusterDTO {
@@ -1044,3 +1046,4 @@ export namespace store {
 	}
 
 }
+

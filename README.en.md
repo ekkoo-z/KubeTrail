@@ -44,18 +44,26 @@ Note: C2 orchestration integrates with external operator-owned C2 infrastructure
 
 ### Build
 
-Build release artifacts:
+Build server release artifacts:
 
 ```bash
 ./scripts/build-release.sh
 ```
 
-The release script runs `go test ./...`, uses `-trimpath`, `-buildvcs=false`, strips debug/symbol data, clears the Go build ID, and writes multi-platform `kubetrail-server-*` binaries plus `SHA256SUMS`.
+```powershell
+.\scripts\build-release.ps1
+```
+
+The server release scripts run `go test ./...`, use `-trimpath`, `-buildvcs=false`, strip debug/symbol data, clear the Go build ID, and write multi-platform `kubetrail-server-*` binaries plus `SHA256SUMS`. Use `./scripts/build-secure-upx.sh` when you need a UPX-compressed server build.
 
 Package the desktop app and Agent runtime assets:
 
 ```bash
-./build.sh
+./scripts/build-client.sh
+```
+
+```powershell
+.\scripts\build-client.ps1
 ```
 
 ## Server Options
