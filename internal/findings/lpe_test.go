@@ -360,3 +360,39 @@ func findingByTitle(findings []Finding, needle string) *Finding {
 	}
 	return nil
 }
+
+func TestEvaluateLPENoHitsSummaryWhenDataPresent(t *testing.T) {
+	doc := model.Document{
+		Facts: []model.Fact{
+			{ID: "identity.current_user", Value: map[string]any{"euid": 1000}},
+			{ID: "lpe.kernel", Value: map[string]any{"release": "6.8.0-31-generic"}},
+			{ID: "lpe.packages", Value: map[string]any{
+				"manager": "dpkg",
+				"packages": []map[string]string{
+					{"name": "sudo", "version": "1.9.20p1-1"},
+				},
+			}},
+		},
+	}
+	got := EvaluateLPE(doc)
+	summary := findingByTitle(got, "No LPE candidates matched")
+	if summary == nil {
+		t.Fatalf("expected no-hits summary when collected data matches no CVE range, got %#v", got)
+	}
+	if summary.Severity != "info" {
+		t.Fatalf("expected info severity, got %s", summary.Severity)
+	}
+}
+
+func TestEvaluateLPENoSummaryWhenNoData(t *testing.T) {
+	doc := model.Document{
+		Facts: []model.Fact{
+			{ID: "identity.current_user", Value: map[string]any{"euid": 1000}},
+			{ID: "lpe.status", Value: map[string]any{"skipped": false}},
+		},
+	}
+	got := EvaluateLPE(doc)
+	if len(got) != 0 {
+		t.Fatalf("expected no findings (and no summary) when LPE data is absent, got %#v", got)
+	}
+}

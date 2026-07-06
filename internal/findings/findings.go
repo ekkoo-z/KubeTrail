@@ -58,11 +58,9 @@ func EvaluateEscape(doc model.Document) []Finding {
 		findings = append(findings, evaluateProcSysBreakoutSurfaces(f)...)
 	}
 
-	if f, ok := facts["filesystem.runtime_sockets"]; ok {
-		findings = append(findings, evaluateRuntimeSockets(f)...)
-	}
-	if f, ok := facts["runtime.sockets"]; ok {
-		findings = append(findings, evaluateRuntimeSockets(f)...)
+	socketFact := mergeRuntimeSocketFacts(facts["filesystem.runtime_sockets"], facts["runtime.sockets"])
+	if socketFact != nil {
+		findings = append(findings, evaluateRuntimeSockets(*socketFact)...)
 	}
 	if f, ok := facts["runtime.versions"]; ok {
 		findings = append(findings, evaluateRuntimeVersions(f)...)
@@ -80,6 +78,8 @@ func EvaluateEscape(doc model.Document) []Finding {
 	} else if f, ok := facts["k8s_context.current_pod"]; ok {
 		findings = append(findings, evaluatePodSpec(f, "k8s_context.current_pod")...)
 	}
+
+	findings = append(findings, combineEscapeSignals(facts)...)
 
 	return findings
 }
@@ -101,12 +101,12 @@ func EvaluateRBAC(doc model.Document) []Finding {
 
 func evaluateCaps(f model.Fact) []Finding {
 	var findings []Finding
-	val, ok := f.Value.(map[string]any)
-	if !ok {
+	val := mapFromAny(f.Value)
+	if val == nil {
 		return nil
 	}
-	caps, ok := val["capabilities"].(map[string]any)
-	if !ok {
+	caps := mapFromAny(val["capabilities"])
+	if caps == nil {
 		return nil
 	}
 	effStr, _ := caps["effective"].(string)
@@ -125,20 +125,21 @@ func evaluateCaps(f model.Fact) []Finding {
 		severity string
 	}
 	checks := []capCheck{
-		{21, "CAP_SYS_ADMIN", "critical"},
-		{19, "CAP_SYS_PTRACE", "high"},
+		{21, "CAP_SYS_ADMIN", "high"},
+		{19, "CAP_SYS_PTRACE", "medium"},
 		{12, "CAP_NET_ADMIN", "medium"},
 		{2, "CAP_DAC_READ_SEARCH", "medium"},
-		{23, "CAP_SYS_RAWIO", "high"},
-		{16, "CAP_SYS_MODULE", "critical"},
+		{23, "CAP_SYS_RAWIO", "medium"},
+		{16, "CAP_SYS_MODULE", "high"},
 	}
 	for _, c := range checks {
 		if eff&(1<<c.bit) != 0 {
 			findings = append(findings, Finding{
 				Severity:    c.severity,
 				Category:    "escape",
-				Title:       fmt.Sprintf("%s in effective capabilities", c.name),
-				Description: fmt.Sprintf("Capability bit %d set in CapEff=%s", c.bit, effStr),
+				Confidence:  "signal",
+				Title:       fmt.Sprintf("%s in effective caps", c.name),
+				Description: fmt.Sprintf("Capability bit %d set in CapEff=%s; alone this is an exposure signal — escalation requires a matching writable host surface", c.bit, effStr),
 				Evidence:    "proc.status_security",
 			})
 		}
@@ -147,17 +148,18 @@ func evaluateCaps(f model.Fact) []Finding {
 }
 
 func evaluateSeccomp(f model.Fact) []Finding {
-	val, ok := f.Value.(map[string]any)
-	if !ok {
+	val := mapFromAny(f.Value)
+	if val == nil {
 		return nil
 	}
 	seccomp, _ := val["seccomp"].(string)
 	if seccomp == "0" {
 		return []Finding{{
-			Severity:    "high",
+			Severity:    "medium",
 			Category:    "escape",
+			Confidence:  "signal",
 			Title:       "Seccomp disabled",
-			Description: "No seccomp profile active (Seccomp=0)",
+			Description: "No seccomp profile active (Seccomp=0); exposure signal, needs another escape primitive to be useful",
 			Evidence:    "proc.status_security",
 		}}
 	}
@@ -165,15 +167,16 @@ func evaluateSeccomp(f model.Fact) []Finding {
 }
 
 func evaluateNoNewPrivs(f model.Fact) []Finding {
-	val, ok := f.Value.(map[string]any)
-	if !ok {
+	val := mapFromAny(f.Value)
+	if val == nil {
 		return nil
 	}
 	noNewPrivs, _ := val["noNewPrivs"].(string)
 	if noNewPrivs == "0" {
 		return []Finding{{
-			Severity:    "medium",
+			Severity:    "low",
 			Category:    "escape",
+			Confidence:  "signal",
 			Title:       "NoNewPrivs disabled",
 			Description: "NoNewPrivs=0 allows privilege-gaining exec transitions if another vector is present",
 			Evidence:    "proc.status_security",
@@ -192,7 +195,7 @@ func evaluateNamespaceSharing(selfNS, pid1NS map[string]any) []Finding {
 	checks := []nsCheck{
 		{"pid", "Host PID namespace shared", "high"},
 		{"net", "Host network namespace shared", "high"},
-		{"mnt", "Host mount namespace shared", "critical"},
+		{"mnt", "Host mount namespace shared", "high"},
 	}
 	for _, c := range checks {
 		selfVal, _ := selfNS[c.name].(string)
@@ -201,8 +204,9 @@ func evaluateNamespaceSharing(selfNS, pid1NS map[string]any) []Finding {
 			findings = append(findings, Finding{
 				Severity:    c.severity,
 				Category:    "escape",
+				Confidence:  "signal",
 				Title:       c.title,
-				Description: fmt.Sprintf("Process ns/%s matches PID 1: %s", c.name, selfVal),
+				Description: fmt.Sprintf("Process ns/%s matches PID 1: %s; shared namespace is an exposure signal — escalation needs a matching writable host surface", c.name, selfVal),
 				Evidence:    "proc.namespaces_self",
 			})
 		}
@@ -211,8 +215,8 @@ func evaluateNamespaceSharing(selfNS, pid1NS map[string]any) []Finding {
 }
 
 func evaluateCgroupWritable(f model.Fact) []Finding {
-	val, ok := f.Value.(map[string]any)
-	if !ok {
+	val := mapFromAny(f.Value)
+	if val == nil {
 		return nil
 	}
 	writable, _ := val["writable"].(bool)
@@ -220,8 +224,9 @@ func evaluateCgroupWritable(f model.Fact) []Finding {
 		return []Finding{{
 			Severity:    "high",
 			Category:    "escape",
+			Confidence:  "signal",
 			Title:       "Writable cgroup mount (release_agent escape)",
-			Description: "Cgroup filesystem mounted read-write inside container",
+			Description: "Cgroup filesystem mounted read-write inside container; exposure signal — escalation to a release_agent breakout needs CAP_SYS_ADMIN",
 			Evidence:    "proc.cgroup_writable",
 		}}
 	}
@@ -229,8 +234,8 @@ func evaluateCgroupWritable(f model.Fact) []Finding {
 }
 
 func evaluateCgroupDevices(f model.Fact) []Finding {
-	val, ok := f.Value.(map[string]any)
-	if !ok {
+	val := mapFromAny(f.Value)
+	if val == nil {
 		return nil
 	}
 	blockWrite, _ := val["blockWriteAllowed"].(bool)
@@ -238,12 +243,56 @@ func evaluateCgroupDevices(f model.Fact) []Finding {
 		return []Finding{{
 			Severity:    "high",
 			Category:    "escape",
+			Confidence:  "signal",
 			Title:       "Block device write access allowed",
-			Description: "Cgroup devices.list permits write to block devices (host disk access)",
+			Description: "Cgroup devices.list permits write to block devices (host disk access); exposure signal — needs a privileged/CAP_SYS_ADMIN context to fully exploit",
 			Evidence:    "proc.cgroup_devices",
 		}}
 	}
 	return nil
+}
+
+// mergeRuntimeSocketFacts combines the permission-aware runtime.sockets fact
+// with the path-only filesystem.runtime_sockets fact. The runtime.sockets items
+// carry writableByCurrentUser / dockerInfo; filesystem.runtime_sockets only
+// records path/mode/isDir. Dropping the latter's items into evaluateRuntimeSockets
+// verbatim caused every socket to register as "unconfirmed" and duplicate the
+// runtime.sockets findings. We de-dup by path, preferring the item that carries
+// permission metadata.
+func mergeRuntimeSocketFacts(facts ...model.Fact) *model.Fact {
+	merged := map[string]map[string]any{}
+	var order []string
+	for _, f := range facts {
+		for _, item := range sliceMapsFromAny(f.Value) {
+			p, _ := item["path"].(string)
+			if p == "" {
+				continue
+			}
+			_, hasWritable := item["writableByCurrentUser"].(bool)
+			_, hasDockerInfo := item["dockerInfo"].(map[string]any)
+			existing, ok := merged[p]
+			if !ok {
+				merged[p] = item
+				order = append(order, p)
+				continue
+			}
+			// Prefer the item richer in permission metadata.
+			exHasWritable, _ := existing["writableByCurrentUser"].(bool)
+			_, exHasDockerInfo := existing["dockerInfo"].(map[string]any)
+			if (hasWritable || hasDockerInfo) && !(exHasWritable || exHasDockerInfo) {
+				merged[p] = item
+			}
+		}
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	items := make([]any, 0, len(order))
+	for _, p := range order {
+		items = append(items, merged[p])
+	}
+	f := model.Fact{ID: "runtime.sockets", Value: items}
+	return &f
 }
 
 func evaluateRuntimeSockets(f model.Fact) []Finding {
@@ -251,7 +300,8 @@ func evaluateRuntimeSockets(f model.Fact) []Finding {
 	if len(items) == 0 {
 		return nil
 	}
-	var criticalPaths []string
+	var writablePaths []string
+	var unconfirmedPaths []string
 	var visiblePaths []string
 	for _, item := range items {
 		path, _ := item["path"].(string)
@@ -261,29 +311,53 @@ func evaluateRuntimeSockets(f model.Fact) []Finding {
 		visiblePaths = append(visiblePaths, path)
 		writable, hasWritable := item["writableByCurrentUser"].(bool)
 		_, hasDockerInfo := item["dockerInfo"].(map[string]any)
-		if writable || hasDockerInfo || !hasWritable {
-			criticalPaths = append(criticalPaths, path)
+		switch {
+		case writable || hasDockerInfo:
+			writablePaths = append(writablePaths, path)
+		case !hasWritable:
+			// Field absent: write permission was not probed — do NOT treat as
+			// accessible. Surface as an unconfirmed signal for follow-up.
+			unconfirmedPaths = append(unconfirmedPaths, path)
 		}
 	}
 	if len(visiblePaths) == 0 {
 		return nil
 	}
-	if len(criticalPaths) == 0 {
-		return []Finding{{
+	var findings []Finding
+	if len(writablePaths) > 0 {
+		findings = append(findings, Finding{
+			Severity:    "critical",
+			Category:    "escape",
+			Confidence:  "probable",
+			Title:       fmt.Sprintf("Runtime socket writable: %s", strings.Join(writablePaths, ", ")),
+			Description: "Runtime socket is writable or Docker API-responsive; a writable runtime socket is a strong escape primitive",
+			Evidence:    f.ID,
+		})
+	}
+	if len(unconfirmedPaths) > 0 {
+		findings = append(findings, Finding{
 			Severity:    "high",
 			Category:    "escape",
-			Title:       fmt.Sprintf("Runtime socket visible: %s", strings.Join(visiblePaths, ", ")),
-			Description: "Container runtime socket exists but current-user write/API access was not confirmed",
+			Confidence:  "signal",
+			Title:       fmt.Sprintf("Runtime socket (write unconfirmed): %s", strings.Join(unconfirmedPaths, ", ")),
+			Description: "Runtime socket exists but current-user write/API access was not confirmed; treat as an exposure signal pending verification",
 			Evidence:    f.ID,
-		}}
+		})
 	}
-	return []Finding{{
-		Severity:    "critical",
-		Category:    "escape",
-		Title:       fmt.Sprintf("Runtime socket accessible: %s", strings.Join(criticalPaths, ", ")),
-		Description: "Runtime socket is writable, Docker API-responsive, or comes from a legacy socket fact without permission metadata",
-		Evidence:    f.ID,
-	}}
+	// Sockets confirmed not writable (writable==false with hasWritable==true) are
+	// still worth recording as exposure signals.
+	confirmedNotWritable := len(visiblePaths) - len(writablePaths) - len(unconfirmedPaths)
+	if confirmedNotWritable > 0 && len(writablePaths) == 0 && len(unconfirmedPaths) == 0 {
+		findings = append(findings, Finding{
+			Severity:    "high",
+			Category:    "escape",
+			Confidence:  "signal",
+			Title:       fmt.Sprintf("Runtime socket visible: %s", strings.Join(visiblePaths, ", ")),
+			Description: "Container runtime socket exists but is not writable by the current user; exposure signal only",
+			Evidence:    f.ID,
+		})
+	}
+	return findings
 }
 
 func evaluateRuntimeVersions(f model.Fact) []Finding {
@@ -299,6 +373,7 @@ func evaluateRuntimeVersions(f model.Fact) []Finding {
 			findings = append(findings, Finding{
 				Severity:    severity,
 				Category:    "escape",
+				Confidence:  "probable",
 				Title:       fmt.Sprintf("%s %s version range: %s", strings.Title(name), cve, version),
 				Description: fmt.Sprintf("%s source=%s; version-only evidence, vendor backports still need confirmation", detail, source),
 				Evidence:    "runtime.versions",
@@ -352,8 +427,9 @@ func evaluateVolumeHints(f model.Fact) []Finding {
 		findings = append(findings, Finding{
 			Severity:    "high",
 			Category:    "escape",
+			Confidence:  "signal",
 			Title:       fmt.Sprintf("hostPath volume mounted: %s", p),
-			Description: "Host filesystem path mounted into container",
+			Description: "Host filesystem path mounted into container; exposure signal — sensitivity of the path determines direct impact",
 			Evidence:    "filesystem.volume_hints",
 		})
 	}
@@ -361,11 +437,11 @@ func evaluateVolumeHints(f model.Fact) []Finding {
 }
 
 func evaluatePodSpec(f model.Fact, evidence string) []Finding {
-	val, ok := f.Value.(map[string]any)
-	if !ok {
+	val := mapFromAny(f.Value)
+	if val == nil {
 		return nil
 	}
-	spec, _ := val["spec"].(map[string]any)
+	spec := mapFromAny(val["spec"])
 	if spec == nil {
 		return nil
 	}
@@ -374,21 +450,21 @@ func evaluatePodSpec(f model.Fact, evidence string) []Finding {
 
 	if hostPID, _ := spec["hostPID"].(bool); hostPID {
 		findings = append(findings, Finding{
-			Severity: "critical", Category: "escape",
-			Title: "Pod spec: hostPID=true", Description: "Pod shares host PID namespace",
+			Severity: "high", Category: "escape", Confidence: "signal",
+			Title: "Pod spec: hostPID=true", Description: "Pod shares host PID namespace; exposure signal — useful with a writable host path or ptrace primitive",
 			Evidence: evidence,
 		})
 	}
 	if hostNet, _ := spec["hostNetwork"].(bool); hostNet {
 		findings = append(findings, Finding{
-			Severity: "high", Category: "escape",
+			Severity: "high", Category: "escape", Confidence: "signal",
 			Title: "Pod spec: hostNetwork=true", Description: "Pod shares host network namespace",
 			Evidence: evidence,
 		})
 	}
 	if hostIPC, _ := spec["hostIPC"].(bool); hostIPC {
 		findings = append(findings, Finding{
-			Severity: "high", Category: "escape",
+			Severity: "medium", Category: "escape", Confidence: "signal",
 			Title: "Pod spec: hostIPC=true", Description: "Pod shares host IPC namespace",
 			Evidence: evidence,
 		})
@@ -404,17 +480,17 @@ func evaluatePodSpec(f model.Fact, evidence string) []Finding {
 		if priv, _ := sc["privileged"].(bool); priv {
 			name, _ := cm["name"].(string)
 			findings = append(findings, Finding{
-				Severity: "critical", Category: "escape",
+				Severity: "critical", Category: "escape", Confidence: "confirmed",
 				Title:       fmt.Sprintf("Privileged container: %s", name),
-				Description: "Container runs in privileged mode with full host access",
+				Description: "Container runs in privileged mode with full host access; standalone deterministic escape primitive",
 				Evidence:    evidence,
 			})
 		}
 		if ape, _ := sc["allowPrivilegeEscalation"].(bool); ape {
 			name, _ := cm["name"].(string)
 			findings = append(findings, Finding{
-				Severity: "medium", Category: "escape",
-				Title:       fmt.Sprintf("allowPrivilegeEscalation=true: %s", name),
+				Severity: "low", Category: "escape", Confidence: "signal",
+				Title:       fmt.Sprintf("allowPrivilegeEscalation: %s", name),
 				Description: "Container explicitly allows privilege escalation across exec transitions",
 				Evidence:    evidence,
 			})
@@ -422,8 +498,8 @@ func evaluatePodSpec(f model.Fact, evidence string) []Finding {
 		if seccomp := mapFromAny(sc["seccompProfile"]); strings.EqualFold(toFindingString(seccomp["type"]), "Unconfined") {
 			name, _ := cm["name"].(string)
 			findings = append(findings, Finding{
-				Severity: "high", Category: "escape",
-				Title:       fmt.Sprintf("Unconfined seccomp profile: %s", name),
+				Severity: "medium", Category: "escape", Confidence: "signal",
+				Title:       fmt.Sprintf("Unconfined seccomp: %s", name),
 				Description: "Container securityContext sets seccompProfile.type=Unconfined",
 				Evidence:    evidence,
 			})
@@ -433,8 +509,8 @@ func evaluatePodSpec(f model.Fact, evidence string) []Finding {
 			if dangerousPodCapability(capName) {
 				name, _ := cm["name"].(string)
 				findings = append(findings, Finding{
-					Severity: "high", Category: "escape",
-					Title:       fmt.Sprintf("Pod spec adds dangerous capability %s: %s", capName, name),
+					Severity: "medium", Category: "escape", Confidence: "signal",
+					Title:       fmt.Sprintf("Pod spec adds cap %s: %s", capName, name),
 					Description: "Container securityContext.capabilities.add contains a capability commonly used in container breakouts",
 					Evidence:    evidence,
 				})
@@ -445,7 +521,7 @@ func evaluatePodSpec(f model.Fact, evidence string) []Finding {
 	if podSC := mapFromAny(spec["securityContext"]); podSC != nil {
 		if seccomp := mapFromAny(podSC["seccompProfile"]); strings.EqualFold(toFindingString(seccomp["type"]), "Unconfined") {
 			findings = append(findings, Finding{
-				Severity: "high", Category: "escape",
+				Severity: "medium", Category: "escape", Confidence: "signal",
 				Title: "Pod seccomp profile is Unconfined", Description: "Pod-level securityContext disables seccomp filtering",
 				Evidence: evidence,
 			})
@@ -458,15 +534,16 @@ func evaluatePodSpec(f model.Fact, evidence string) []Finding {
 		if path == "" {
 			continue
 		}
-		severity := "high"
+		severity := "medium"
 		if dangerousHostPath(path) {
-			severity = "critical"
+			severity = "high"
 		}
 		findings = append(findings, Finding{
 			Severity:    severity,
 			Category:    "escape",
+			Confidence:  "signal",
 			Title:       fmt.Sprintf("Pod spec hostPath: %s", path),
-			Description: "Current Pod spec mounts a hostPath volume; severity is based on the mounted host path",
+			Description: "Current Pod spec mounts a hostPath volume; exposure signal — combine with privileged/hostPID/write primitive to escape",
 			Evidence:    evidence,
 		})
 	}
@@ -493,7 +570,8 @@ func evaluateWritableBindMountsWithoutNosuid(f model.Fact) []Finding {
 		findings = append(findings, Finding{
 			Severity:    severity,
 			Category:    "escape",
-			Title:       fmt.Sprintf("Writable bind mount without nosuid: %s", path),
+			Confidence:  "signal",
+			Title:       fmt.Sprintf("Writable bind mount (no nosuid): %s", path),
 			Description: fmt.Sprintf("Mount is rw and lacks nosuid; confidence=%s reason=%s", confidence, toFindingString(item["reason"])),
 			Evidence:    "filesystem.writable_bind_mounts_without_nosuid",
 		})
@@ -517,8 +595,8 @@ func evaluateProcSysBreakoutSurfaces(f model.Fact) []Finding {
 }
 
 func evaluateExpandedWildcards(f model.Fact) []Finding {
-	val, ok := f.Value.(map[string]any)
-	if !ok {
+	val := mapFromAny(f.Value)
+	if val == nil {
 		return nil
 	}
 	isAdmin, _ := val["clusterAdmin"].(bool)
@@ -597,8 +675,9 @@ func evaluateCgroupReleaseAgents(cgroup map[string]any) []Finding {
 			findings = append(findings, Finding{
 				Severity:    "high",
 				Category:    "escape",
-				Title:       fmt.Sprintf("Writable cgroup release_agent: %s", pathValue),
-				Description: "release_agent is visible and writable from the current context, matching the classic cgroup v1 breakout primitive",
+				Confidence:  "signal",
+				Title:       fmt.Sprintf("Writable release_agent: %s", pathValue),
+				Description: "release_agent is visible and writable from the current context, matching the classic cgroup v1 breakout primitive; needs CAP_SYS_ADMIN to fully weaponize",
 				Evidence:    "proc_sys.breakout_surfaces",
 			})
 		}
@@ -609,7 +688,8 @@ func evaluateCgroupReleaseAgents(cgroup map[string]any) []Finding {
 		findings = append(findings, Finding{
 			Severity:    "high",
 			Category:    "escape",
-			Title:       "Cgroup release_agent files visible with writable cgroup mount",
+			Confidence:  "signal",
+			Title:       "Cgroup release_agent + writable cgroup mount",
 			Description: "release_agent files are present and at least one cgroup filesystem is mounted rw inside the container",
 			Evidence:    "proc_sys.breakout_surfaces",
 		})
@@ -639,7 +719,8 @@ func evaluateKernelHelperPaths(paths map[string]any) []Finding {
 		findings = append(findings, Finding{
 			Severity:    severity,
 			Category:    "escape",
-			Title:       fmt.Sprintf("Writable kernel control path: %s", pathValue),
+			Confidence:  "signal",
+			Title:       fmt.Sprintf("Writable kernel path: %s", pathValue),
 			Description: fmt.Sprintf("%s is writable and can affect kernel helper or host-control behavior", id),
 			Evidence:    "proc_sys.breakout_surfaces",
 		})
@@ -667,7 +748,8 @@ func evaluateSensitiveExposures(exposures map[string]any) []Finding {
 				findings = append(findings, Finding{
 					Severity:    "high",
 					Category:    "escape",
-					Title:       fmt.Sprintf("Writable sensitive kernel surface: %s", pathValue),
+					Confidence:  "signal",
+					Title:       fmt.Sprintf("Writable sensitive surface: %s", pathValue),
 					Description: fmt.Sprintf("%s is writable from the current context", id),
 					Evidence:    "proc_sys.breakout_surfaces",
 				})
@@ -682,7 +764,8 @@ func evaluateSensitiveExposures(exposures map[string]any) []Finding {
 			findings = append(findings, Finding{
 				Severity:    "high",
 				Category:    "escape",
-				Title:       fmt.Sprintf("Readable host memory interface: %s", pathValue),
+				Confidence:  "signal",
+				Title:       fmt.Sprintf("Readable host memory: %s", pathValue),
 				Description: fmt.Sprintf("%s is readable from the current context", id),
 				Evidence:    "proc_sys.breakout_surfaces",
 			})
@@ -690,7 +773,8 @@ func evaluateSensitiveExposures(exposures map[string]any) []Finding {
 			findings = append(findings, Finding{
 				Severity:    "medium",
 				Category:    "escape",
-				Title:       fmt.Sprintf("Readable sensitive proc surface: %s", pathValue),
+				Confidence:  "signal",
+				Title:       fmt.Sprintf("Readable proc surface: %s", pathValue),
 				Description: fmt.Sprintf("%s is readable from the current context", id),
 				Evidence:    "proc_sys.breakout_surfaces",
 			})
@@ -711,6 +795,7 @@ func evaluateSecurityProfiles(profiles map[string]any) []Finding {
 			findings = append(findings, Finding{
 				Severity:    "high",
 				Category:    "escape",
+				Confidence:  "signal",
 				Title:       "AppArmor profile is unconfined",
 				Description: "Current process attr reports an unconfined AppArmor profile",
 				Evidence:    "proc_sys.breakout_surfaces",
@@ -720,6 +805,7 @@ func evaluateSecurityProfiles(profiles map[string]any) []Finding {
 			findings = append(findings, Finding{
 				Severity:    "medium",
 				Category:    "escape",
+				Confidence:  "signal",
 				Title:       "AppArmor appears disabled",
 				Description: fmt.Sprintf("AppArmor enabled flag is %q", enabledRaw),
 				Evidence:    "proc_sys.breakout_surfaces",
@@ -734,6 +820,7 @@ func evaluateSecurityProfiles(profiles map[string]any) []Finding {
 			findings = append(findings, Finding{
 				Severity:    "medium",
 				Category:    "escape",
+				Confidence:  "signal",
 				Title:       "SELinux appears disabled",
 				Description: "SELinux filesystem is not present in the current root view",
 				Evidence:    "proc_sys.breakout_surfaces",
@@ -742,6 +829,7 @@ func evaluateSecurityProfiles(profiles map[string]any) []Finding {
 			findings = append(findings, Finding{
 				Severity:    "medium",
 				Category:    "escape",
+				Confidence:  "signal",
 				Title:       "SELinux is permissive",
 				Description: "SELinux enforce flag is 0",
 				Evidence:    "proc_sys.breakout_surfaces",
@@ -759,6 +847,7 @@ func evaluateUserNamespaceMapping(userns map[string]any) []Finding {
 		return []Finding{{
 			Severity:    "medium",
 			Category:    "escape",
+			Confidence:  "signal",
 			Title:       "User namespace is not remapped",
 			Description: "uid_map indicates the current process is in the initial user namespace, so container root maps directly to host root",
 			Evidence:    "proc_sys.breakout_surfaces",
@@ -768,6 +857,7 @@ func evaluateUserNamespaceMapping(userns map[string]any) []Finding {
 		return []Finding{{
 			Severity:    "medium",
 			Category:    "escape",
+			Confidence:  "signal",
 			Title:       "Container root maps to host root",
 			Description: "uid_map starts at container ID 0 and host ID 0, so userns remapping does not isolate root",
 			Evidence:    "proc_sys.breakout_surfaces",
@@ -785,7 +875,8 @@ func evaluateHostVisibility(host map[string]any) []Finding {
 		return []Finding{{
 			Severity:    "high",
 			Category:    "escape",
-			Title:       fmt.Sprintf("Host-like processes visible: %s", strings.Join(hostProcesses, ", ")),
+			Confidence:  "signal",
+			Title:       fmt.Sprintf("Host processes visible: %s", strings.Join(hostProcesses, ", ")),
 			Description: "Process table includes host services or kernel process names, suggesting host PID namespace exposure",
 			Evidence:    "proc_sys.breakout_surfaces",
 		}}
@@ -794,12 +885,281 @@ func evaluateHostVisibility(host map[string]any) []Finding {
 		return []Finding{{
 			Severity:    "medium",
 			Category:    "escape",
+			Confidence:  "signal",
 			Title:       "Host-like /proc and /dev visibility",
 			Description: fmt.Sprintf("procPidCount=%s devCharDeviceCount=%s", toFindingString(host["procPidCount"]), toFindingString(host["devCharDeviceCount"])),
 			Evidence:    "proc_sys.breakout_surfaces",
 		}}
 	}
 	return nil
+}
+
+// combineEscapeSignals turns co-occurring single-condition signals into
+// confirmed/probable escape findings. Atomic signals alone are weak; the rules
+// below match the skill's "confirmed = privileged+hostSurface / hostPID+writable
+// hostPath / dangerous cap+matching mount" matrix. Original signal findings stay
+// in the output as evidence; this layer only adds upgrade findings.
+func combineEscapeSignals(facts map[string]model.Fact) []Finding {
+	var upgrades []Finding
+
+	sig := collectEscapeSignalSet(facts)
+
+	// Rule A — privileged container + any host surface → confirmed.
+	if sig.privileged {
+		var evidence []string
+		if sig.dangerousHostPath {
+			evidence = append(evidence, "k8s_profile.current_pod_structured|filesystem.volume_hints:hostPath")
+		}
+		if sig.socketWritable {
+			evidence = append(evidence, "filesystem.runtime_sockets|runtime.sockets:writable")
+		}
+		if sig.blockDeviceWrite {
+			evidence = append(evidence, "proc.cgroup_devices:blockWrite")
+		}
+		if len(evidence) > 0 {
+			upgrades = append(upgrades, Finding{
+				Severity:    "critical",
+				Category:    "escape",
+				Confidence:  "confirmed",
+				Title:       "Confirmed escape: privileged + host surface",
+				Description: fmt.Sprintf("Privileged container combined with a host escape surface (%s) forms a deterministic breakout", strings.Join(evidence, "; ")),
+				Evidence:    strings.Join(dedupStrings(evidence), ","),
+			})
+		}
+	}
+
+	// Rule B — CAP_SYS_ADMIN + writable host kernel surface → probable.
+	if sig.sysAdmin {
+		var evidence []string
+		if sig.releaseAgentWritable || sig.cgroupMountWritable {
+			evidence = append(evidence, "proc_sys.breakout_surfaces:cgroup")
+		}
+		if sig.writableKernelHelper {
+			evidence = append(evidence, "proc_sys.breakout_surfaces:kernelHelperPaths")
+		}
+		if sig.writableSensitiveSurface {
+			evidence = append(evidence, "proc_sys.breakout_surfaces:sensitiveExposures")
+		}
+		if len(evidence) > 0 {
+			upgrades = append(upgrades, Finding{
+				Severity:    "critical",
+				Category:    "escape",
+				Confidence:  "probable",
+				Title:       "Probable escape: CAP_SYS_ADMIN + writable host surface",
+				Description: fmt.Sprintf("CAP_SYS_ADMIN plus a writable cgroup/kernel-helper/sensitive surface (%s) matches a classic breakout primitive", strings.Join(evidence, "; ")),
+				Evidence:    strings.Join(dedupStrings(evidence), ","),
+			})
+		}
+	}
+
+	// Rule C — host PID namespace + writable sensitive host path → probable.
+	if sig.hostPID {
+		var evidence []string
+		if sig.dangerousHostPath {
+			evidence = append(evidence, "hostPath:sensitive")
+		}
+		if sig.writableBindNoNosuid {
+			evidence = append(evidence, "filesystem.writable_bind_mounts_without_nosuid")
+		}
+		if len(evidence) > 0 {
+			upgrades = append(upgrades, Finding{
+				Severity:    "critical",
+				Category:    "escape",
+				Confidence:  "probable",
+				Title:       "Probable escape: host PID + writable host path",
+				Description: "Host PID namespace visibility combined with a writable host path enables ptrace/injection into host processes",
+				Evidence:    strings.Join(dedupStrings(evidence), ","),
+			})
+		}
+	}
+
+	// Rule D — runtime socket confirmed writable is emitted directly by
+	// evaluateRuntimeSockets as critical/probable; nothing to add here.
+
+	return upgrades
+}
+
+type escapeSignalSet struct {
+	privileged                bool
+	sysAdmin                  bool
+	hostPID                   bool
+	dangerousHostPath         bool
+	socketWritable            bool
+	blockDeviceWrite          bool
+	releaseAgentWritable      bool
+	cgroupMountWritable       bool
+	writableKernelHelper      bool
+	writableSensitiveSurface  bool
+	writableBindNoNosuid      bool
+}
+
+func collectEscapeSignalSet(facts map[string]model.Fact) escapeSignalSet {
+	var sig escapeSignalSet
+
+	// Capabilities → CAP_SYS_ADMIN.
+	if f, ok := facts["proc.status_security"]; ok {
+		val := mapFromAny(f.Value)
+		if caps := mapFromAny(val["capabilities"]); caps != nil {
+			if effStr, _ := caps["effective"].(string); effStr != "" {
+				if eff, err := strconv.ParseUint(effStr, 16, 64); err == nil {
+					// CAP_SYS_ADMIN is bit 21.
+					sig.sysAdmin = sig.sysAdmin || eff&(1<<21) != 0
+				}
+			}
+		}
+	}
+
+	// Pod spec → privileged, hostPID, dangerous hostPath, capability adds.
+	podSpec := podSpecMap(facts)
+	if podSpec != nil {
+		if hostPID, _ := podSpec["hostPID"].(bool); hostPID {
+			sig.hostPID = true
+		}
+		// PID namespace shared with pid1 also counts as hostPID-like.
+	}
+	if selfNS := factMap(facts, "proc.namespaces_self"); selfNS != nil {
+		if pid1NS := factMap(facts, "proc.namespaces_pid1"); pid1NS != nil {
+			selfPID, _ := selfNS["pid"].(string)
+			pid1PID, _ := pid1NS["pid"].(string)
+			if selfPID != "" && selfPID == pid1PID {
+				sig.hostPID = true
+			}
+		}
+	}
+	if podSpec != nil {
+		for _, c := range sliceMapsFromAny(podSpec["containers"]) {
+			sc := mapFromAny(c["securityContext"])
+			if priv, _ := sc["privileged"].(bool); priv {
+				sig.privileged = true
+			}
+			caps := mapFromAny(sc["capabilities"])
+			for _, capName := range stringSliceFromAny(caps["add"]) {
+				if strings.EqualFold(strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(capName)), "CAP_"), "SYS_ADMIN") {
+					sig.sysAdmin = true
+				}
+			}
+		}
+		for _, volume := range sliceMapsFromAny(podSpec["volumes"]) {
+			hostPath := mapFromAny(volume["hostPath"])
+			if p := toFindingString(hostPath["path"]); p != "" && dangerousHostPath(p) {
+				sig.dangerousHostPath = true
+			}
+		}
+	}
+
+	// hostPath volume hints.
+	if f, ok := facts["filesystem.volume_hints"]; ok {
+		for _, m := range sliceMapsFromAny(f.Value) {
+			kind, _ := m["kind"].(string)
+			p, _ := m["path"].(string)
+			if kind == "hostPath" && p != "" && dangerousHostPath(p) {
+				sig.dangerousHostPath = true
+			}
+		}
+	}
+
+	// Runtime sockets — confirmed writable.
+	for _, id := range []string{"filesystem.runtime_sockets", "runtime.sockets"} {
+		f, ok := facts[id]
+		if !ok {
+			continue
+		}
+		for _, item := range sliceMapsFromAny(f.Value) {
+			if writable, _ := item["writableByCurrentUser"].(bool); writable {
+				sig.socketWritable = true
+			}
+			if _, ok := item["dockerInfo"].(map[string]any); ok {
+				sig.socketWritable = true
+			}
+		}
+	}
+
+	// Cgroup block device write.
+	if f, ok := facts["proc.cgroup_devices"]; ok {
+		if val := mapFromAny(f.Value); val != nil {
+			if bw, _ := val["blockWriteAllowed"].(bool); bw {
+				sig.blockDeviceWrite = true
+			}
+		}
+	}
+	if f, ok := facts["proc.cgroup_writable"]; ok {
+		if val := mapFromAny(f.Value); val != nil {
+			if w, _ := val["writable"].(bool); w {
+				sig.cgroupMountWritable = true
+			}
+		}
+	}
+
+	// proc_sys breakout surfaces.
+	if f, ok := facts["proc_sys.breakout_surfaces"]; ok {
+		root := mapFromAny(f.Value)
+		if cgroup := mapFromAny(root["cgroup"]); cgroup != nil {
+			for _, item := range sliceMapsFromAny(cgroup["releaseAgents"]) {
+				if boolFromAny(item["writableLikely"]) || boolFromAny(item["writableByCurrentUser"]) {
+					sig.releaseAgentWritable = true
+				}
+			}
+			if wm := mapFromAny(cgroup["writableCgroupMounts"]); boolFromAny(wm["writable"]) {
+				sig.cgroupMountWritable = true
+			}
+		}
+		if helpers := mapFromAny(root["kernelHelperPaths"]); helpers != nil {
+			for _, raw := range helpers {
+				item := mapFromAny(raw)
+				if boolFromAny(item["writableLikely"]) || boolFromAny(item["writableByCurrentUser"]) {
+					sig.writableKernelHelper = true
+				}
+			}
+		}
+		if exposures := mapFromAny(root["sensitiveExposures"]); exposures != nil {
+			for id, raw := range exposures {
+				item := mapFromAny(raw)
+				if !boolFromAny(item["writableLikely"]) && !boolFromAny(item["writableByCurrentUser"]) {
+					continue
+				}
+				switch id {
+				case "sys_kernel_debug", "sys_kernel_security", "sys_kernel_vmcoreinfo", "efi_vars", "efi_efivars", "sys_firmware":
+					sig.writableSensitiveSurface = true
+				}
+			}
+		}
+	}
+
+	// Writable bind mounts without nosuid (high confidence only counts for rule C).
+	if f, ok := facts["filesystem.writable_bind_mounts_without_nosuid"]; ok {
+		for _, item := range sliceMapsFromAny(mapFromAny(f.Value)["items"]) {
+			if toFindingString(item["confidence"]) == "high" {
+				sig.writableBindNoNosuid = true
+			}
+		}
+	}
+
+	return sig
+}
+
+func podSpecMap(facts map[string]model.Fact) map[string]any {
+	for _, id := range []string{"k8s_profile.current_pod_structured", "k8s_context.current_pod"} {
+		if f, ok := facts[id]; ok {
+			if m := mapFromAny(f.Value); m != nil {
+				if spec, _ := m["spec"].(map[string]any); spec != nil {
+					return spec
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func dedupStrings(in []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func indexFacts(facts []model.Fact) map[string]model.Fact {

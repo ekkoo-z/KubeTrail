@@ -31,7 +31,26 @@ func Render(w io.Writer, results []Finding, color bool, outputPath string) {
 
 	sorted := append([]Finding(nil), results...)
 	SortBySeverity(sorted)
-	renderSection(w, "Attack Surface Risk Findings", sorted, color)
+
+	// Confirmed/probable escapes get their own highlight box at the top; the
+	// remaining signal-level findings stay in the general attack-surface box.
+	var escapeBox, surfaceBox []Finding
+	for _, f := range sorted {
+		if f.Category == "escape" && (f.Confidence == "confirmed" || f.Confidence == "probable") {
+			escapeBox = append(escapeBox, f)
+		} else {
+			surfaceBox = append(surfaceBox, f)
+		}
+	}
+	if len(escapeBox) > 0 {
+		renderSection(w, "Confirmed / Probable Container Escape", escapeBox, color)
+		if len(surfaceBox) > 0 {
+			fmt.Fprintln(w)
+		}
+	}
+	if len(surfaceBox) > 0 {
+		renderSection(w, "Attack Surface Risk Findings", surfaceBox, color)
+	}
 
 	fmt.Fprintln(w)
 	renderSummary(w, results, color)
@@ -49,13 +68,12 @@ func renderSection(w io.Writer, title string, results []Finding, color bool) {
 		fmt.Fprintln(w, header)
 	}
 
-	fmt.Fprintf(w, " %-8s │ %-9s │ %-8s │ %-36s │ %s\n", "SEVERITY", "CONF", "CATEGORY", "FINDING", "EVIDENCE")
-	fmt.Fprintf(w, "%s┼%s┼%s┼%s┼%s\n",
+	fmt.Fprintf(w, " %-8s │ %-9s │ %-58s │ %s\n", "SEVERITY", "CONF", "FINDING", "EVIDENCE")
+	fmt.Fprintf(w, "%s┼%s┼%s┼%s\n",
 		strings.Repeat("─", 10),
 		strings.Repeat("─", 11),
-		strings.Repeat("─", 10),
-		strings.Repeat("─", 38),
-		strings.Repeat("─", 30))
+		strings.Repeat("─", 60),
+		strings.Repeat("─", 26))
 
 	for _, f := range results {
 		sev := strings.ToUpper(f.Severity)
@@ -66,10 +84,9 @@ func renderSection(w io.Writer, title string, results []Finding, color bool) {
 		if confidence == "" {
 			confidence = "-"
 		}
-		category := truncate(f.Category, 8)
-		title := truncate(f.Title, 36)
-		evidence := truncate(f.Evidence, 28)
-		fmt.Fprintf(w, " %-8s │ %-9s │ %-8s │ %-36s │ %s\n", sev, confidence, category, title, evidence)
+		title := truncate(f.Title, 58)
+		evidence := truncate(f.Evidence, 24)
+		fmt.Fprintf(w, " %-8s │ %-9s │ %-58s │ %s\n", sev, confidence, title, evidence)
 	}
 }
 

@@ -17,7 +17,73 @@ func EvaluateLPE(doc model.Document) []Finding {
 	var findings []Finding
 	findings = append(findings, evaluateLPEUserland(facts)...)
 	findings = append(findings, evaluateLPEKernel(facts)...)
+	if len(findings) == 0 {
+		if summary := lpeNoHitsSummary(facts); summary != nil {
+			findings = append(findings, *summary)
+		}
+	}
 	return findings
+}
+
+// lpeNoHitsSummary distinguishes a genuine "no exploitable LPE" result from a
+// silent "collection failed / nothing to evaluate" one. When core LPE inputs
+// were collected but no rule matched, we emit an info-level summary so an empty
+// LPE section reads as a positive finding rather than a possible data gap.
+func lpeNoHitsSummary(facts map[string]model.Fact) *Finding {
+	kernel := factMap(facts, "lpe.kernel")
+	release, _ := kernel["release"].(string)
+	packages := factMap(facts, "lpe.packages")
+	hasPackages := packages != nil && hasLpePackageItems(packages["packages"])
+	hasSUIDTools := facts["lpe.suid_tools"].ID != ""
+	hasKernel := release != ""
+	hasModules := facts["lpe.modules"].ID != ""
+	hasSysctls := facts["lpe.sysctls"].ID != ""
+
+	// Nothing collected at all → not a "no exploit" verdict, just a data gap.
+	if !hasKernel && !hasPackages && !hasSUIDTools {
+		return nil
+	}
+
+	var parts []string
+	if hasKernel {
+		parts = append(parts, fmt.Sprintf("kernel=%s", release))
+	}
+	if hasPackages {
+		parts = append(parts, "packages scanned")
+	}
+	if hasSUIDTools {
+		parts = append(parts, "suid_tools scanned")
+	}
+	if _, ok := facts["lpe.kernel_config"]; ok {
+		parts = append(parts, "kernel_config scanned")
+	}
+	if hasModules {
+		parts = append(parts, "modules scanned")
+	}
+	if hasSysctls {
+		parts = append(parts, "sysctls scanned")
+	}
+	return &Finding{
+		Severity:    "info",
+		Category:    "lpe",
+		Confidence:  "signal",
+		Title:       "No LPE candidates matched",
+		Description: "Kernel release, setuid tools, and package versions were collected but fell outside known vulnerable CVE ranges / prerequisites: " + strings.Join(parts, ", "),
+		Evidence:    "lpe.status,lpe.kernel,lpe.packages,lpe.suid_tools",
+	}
+}
+
+func hasLpePackageItems(raw any) bool {
+	switch v := raw.(type) {
+	case []any:
+		return len(v) > 0
+	case []map[string]any:
+		return len(v) > 0
+	case []map[string]string:
+		return len(v) > 0
+	default:
+		return false
+	}
 }
 
 func evaluateLPEUserland(facts map[string]model.Fact) []Finding {
