@@ -481,7 +481,7 @@ async function refreshLogs() {
                 <div class="field-hint">JSON 格式，这些环境变量会透传给 Agent 子进程</div>
               </div>
             </el-form-item>
-            <el-form-item label="Claude CLI">
+            <el-form-item v-if="provider === 'claude'" label="Claude CLI">
               <div class="runtime-input">
                 <el-input
                   v-model="claudePath"
@@ -494,7 +494,7 @@ async function refreshLogs() {
                 {{ runtimeInfo?.claudeAvailable ? `已发现 (${runtimeInfo.claudeSource || 'auto'}): ${runtimeInfo.claudePath}` : (runtimeInfo?.claudeError || '未检测') }}
               </div>
             </el-form-item>
-            <el-form-item label="Codex CLI">
+            <el-form-item v-if="provider === 'codex'" label="Codex CLI">
               <div class="runtime-input">
                 <el-input
                   v-model="codexPath"

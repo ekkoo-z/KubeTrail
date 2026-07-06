@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -157,7 +158,7 @@ func TestResolveClaudeFindsExecutableOnPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveClaudeForEnv failed: %v", err)
 	}
-	if got != claudePath {
+	if !sameTestPath(got, claudePath) {
 		t.Fatalf("expected %q, got %q", claudePath, got)
 	}
 	if source != "PATH" {
@@ -176,7 +177,7 @@ func TestResolveClaudeUsesConfiguredPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveClaudeForEnv failed: %v", err)
 	}
-	if got != claudePath {
+	if !sameTestPath(got, claudePath) {
 		t.Fatalf("expected %q, got %q", claudePath, got)
 	}
 	if source != "configured" {
@@ -199,7 +200,7 @@ func TestResolveClaudeConfiguredCommandUsesPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveClaudeForEnv failed: %v", err)
 	}
-	if got != claudePath {
+	if !sameTestPath(got, claudePath) {
 		t.Fatalf("expected %q, got %q", claudePath, got)
 	}
 	if source != "configured" {
@@ -224,7 +225,7 @@ func TestResolveCodexConfiguredCommandUsesProvidedEnvPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveCodexForEnv failed: %v", err)
 	}
-	if got != codexPath {
+	if !sameTestPath(got, codexPath) {
 		t.Fatalf("expected %q, got %q", codexPath, got)
 	}
 	if source != "configured" {
@@ -252,6 +253,83 @@ func TestEnsureCodexVendorPathAddsNpmVendorPath(t *testing.T) {
 	}
 }
 
+func TestResolveCodexConfiguredCmdShimUsesNativeExeOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows shim resolution")
+	}
+	dir := t.TempDir()
+	shim := filepath.Join(dir, "codex.cmd")
+	if err := os.WriteFile(shim, []byte("@echo off\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	native := testWindowsCodexNativePath(t, dir)
+	if err := os.MkdirAll(filepath.Dir(native), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(native, []byte("MZ"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, source, err := resolveCodexForEnv([]string{"KUBETRAIL_AGENT_PATH_TO_CODEX=" + shim})
+	if err != nil {
+		t.Fatalf("resolveCodexForEnv failed: %v", err)
+	}
+	if !sameTestPath(got, native) {
+		t.Fatalf("expected %q, got %q", native, got)
+	}
+	if source != "configured npm native" {
+		t.Fatalf("expected configured npm native source, got %q", source)
+	}
+}
+
+func TestResolveCodexPathCmdShimUsesNativeExeOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows shim resolution")
+	}
+	dir := t.TempDir()
+	shim := filepath.Join(dir, "codex.cmd")
+	if err := os.WriteFile(shim, []byte("@echo off\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	native := testWindowsCodexNativePath(t, dir)
+	if err := os.MkdirAll(filepath.Dir(native), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(native, []byte("MZ"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, source, err := findCodexExecutableForEnv([]string{"PATH=" + dir})
+	if err != nil {
+		t.Fatalf("findCodexExecutableForEnv failed: %v", err)
+	}
+	if !sameTestPath(got, native) {
+		t.Fatalf("expected %q, got %q", native, got)
+	}
+	if source != "PATH npm native" {
+		t.Fatalf("expected PATH npm native source, got %q", source)
+	}
+}
+
+func TestResolveCodexConfiguredCmdShimWithoutNativeErrorsOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows shim resolution")
+	}
+	dir := t.TempDir()
+	shim := filepath.Join(dir, "codex.cmd")
+	if err := os.WriteFile(shim, []byte("@echo off\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := resolveCodexForEnv([]string{"KUBETRAIL_AGENT_PATH_TO_CODEX=" + shim})
+	if err == nil {
+		t.Fatal("expected shim without native codex.exe to fail")
+	}
+	if !strings.Contains(err.Error(), "Windows shim") {
+		t.Fatalf("expected Windows shim error, got %v", err)
+	}
+}
+
 func TestEnsureCodexVendorPathDoesNotDuplicatePath(t *testing.T) {
 	targetRoot := filepath.Join(t.TempDir(), "vendor", "aarch64-apple-darwin")
 	codexPath := filepath.Join(targetRoot, "bin", "codex")
@@ -269,7 +347,7 @@ func TestEnsureCodexVendorPathDoesNotDuplicatePath(t *testing.T) {
 
 	count := 0
 	for _, part := range filepath.SplitList(envValue(env, "PATH")) {
-		if normalizeExecutablePath(part) == normalizeExecutablePath(vendorPath) {
+		if samePathString(normalizeExecutablePath(part), normalizeExecutablePath(vendorPath)) {
 			count++
 		}
 	}
@@ -292,19 +370,59 @@ func TestResolveNodeUsesProvidedEnvPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveNodeForEnv failed: %v", err)
 	}
-	if got != nodePath {
+	if !sameTestPath(got, nodePath) {
 		t.Fatalf("expected %q, got %q", nodePath, got)
+	}
+}
+
+func TestAppendPathDirPreservesWindowsPathKey(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows PATH casing")
+	}
+	dir := t.TempDir()
+	env := appendPathDir([]string{"Path=C:\\Windows\\System32"}, dir)
+
+	pathKeys := 0
+	for _, item := range env {
+		key, _, ok := splitEnvItem(item)
+		if ok && strings.EqualFold(key, "PATH") {
+			pathKeys++
+		}
+	}
+	if pathKeys != 1 {
+		t.Fatalf("expected one PATH-like key, got %d in %#v", pathKeys, env)
+	}
+	if !pathListContains(envValue(env, "PATH"), dir) {
+		t.Fatalf("expected PATH to include %q, got %q", dir, envValue(env, "PATH"))
 	}
 }
 
 func pathListContains(pathValue, want string) bool {
 	want = normalizeExecutablePath(want)
 	for _, part := range filepath.SplitList(pathValue) {
-		if normalizeExecutablePath(part) == want {
+		if samePathString(normalizeExecutablePath(part), want) {
 			return true
 		}
 	}
 	return false
+}
+
+func sameTestPath(left, right string) bool {
+	left = normalizeExecutablePath(left)
+	right = normalizeExecutablePath(right)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
+}
+
+func testWindowsCodexNativePath(t *testing.T, npmRoot string) string {
+	t.Helper()
+	triple, platformPackage := windowsCodexTarget()
+	if triple == "" || platformPackage == "" {
+		t.Fatalf("unsupported windows arch: %s", runtime.GOARCH)
+	}
+	return filepath.Join(npmRoot, "node_modules", "@openai", "codex", "node_modules", "@openai", platformPackage, "vendor", triple, "bin", "codex.exe")
 }
 
 func TestEnvValueFromList(t *testing.T) {
@@ -461,13 +579,7 @@ func TestSkillNameRejectsPathTraversal(t *testing.T) {
 }
 
 func envValue(env []string, key string) string {
-	prefix := key + "="
-	for _, item := range env {
-		if len(item) >= len(prefix) && item[:len(prefix)] == prefix {
-			return item[len(prefix):]
-		}
-	}
-	return ""
+	return envValueFromList(env, key)
 }
 
 type recordingWriteCloser struct {

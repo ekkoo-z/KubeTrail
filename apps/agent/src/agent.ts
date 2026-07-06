@@ -1,7 +1,8 @@
 import { existsSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { resolve } from "node:path";
 import { query, type CanUseTool, type Options, type SDKMessage, type SDKResultMessage, type Settings } from "@anthropic-ai/claude-agent-sdk";
-import { Codex, type CodexOptions, type ThreadEvent, type ThreadItem } from "@openai/codex-sdk";
+import type { CodexOptions, ThreadEvent, ThreadItem } from "@openai/codex-sdk";
 import {
   buildClaudeEnv,
   buildCodexEnv,
@@ -15,6 +16,9 @@ import {
 import { KubeTrailContextStore } from "./context.js";
 import { resolveEnabledSkillNames } from "./skills.js";
 import { createKubeTrailMcpServer, kubeTrailToolNames } from "./tools/kubetrail.js";
+
+const require = createRequire(import.meta.url);
+let codexWindowsSpawnPatchInstalled = false;
 
 export type AgentEvent =
   | { type: "init"; sessionId: string; model: string; tools: string[]; skills: string[]; provider?: string }
@@ -358,12 +362,38 @@ function enabledInitSkills(providerSkills: readonly string[] | undefined, enable
   return filtered.length > 0 ? filtered : [...enabledSkills];
 }
 
+function installCodexWindowsSpawnPatch(): void {
+  if (process.platform !== "win32" || codexWindowsSpawnPatchInstalled) {
+    return;
+  }
+  type ChildProcessModule = typeof import("node:child_process");
+  type SpawnFunction = ChildProcessModule["spawn"];
+  const childProcess = require("node:child_process") as ChildProcessModule & { spawn: SpawnFunction & { __kubetrailWindowsHide?: true } };
+  if (childProcess.spawn.__kubetrailWindowsHide) {
+    codexWindowsSpawnPatchInstalled = true;
+    return;
+  }
+  const originalSpawn = childProcess.spawn;
+  const patchedSpawn = ((command: string, argsOrOptions?: readonly string[] | import("node:child_process").SpawnOptions, maybeOptions?: import("node:child_process").SpawnOptions) => {
+    if (Array.isArray(argsOrOptions)) {
+      return originalSpawn(command, argsOrOptions, { ...(maybeOptions ?? {}), windowsHide: true });
+    }
+    return originalSpawn(command, { ...(argsOrOptions ?? {}), windowsHide: true });
+  }) as SpawnFunction & { __kubetrailWindowsHide?: true };
+  patchedSpawn.__kubetrailWindowsHide = true;
+  childProcess.spawn = patchedSpawn;
+  syncBuiltinESMExports();
+  codexWindowsSpawnPatchInstalled = true;
+}
+
 async function runKubeTrailCodexAgent(config: AgentRuntimeConfig, params: RunAgentParams, enabledSkills: readonly string[]): Promise<RunAgentResult> {
   const explicitInputPath = params.inputPath?.trim() ?? "";
   const inputPath = explicitInputPath || (params.useDefaultInputPath ? config.defaultInputPath : "");
   const prompt = buildPrompt(params.message, inputPath, Boolean(params.resumeSession), config.language);
   const skills = (await listSkillNamesForProvider(config)).filter((name) => enabledSkills.includes(name));
   const tools = buildCodexToolList(config);
+  installCodexWindowsSpawnPatch();
+  const { Codex } = await import("@openai/codex-sdk");
   const codex = new Codex({
     codexPathOverride: config.pathToCodexExecutable,
     apiKey: config.apiKey,

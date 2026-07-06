@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -122,7 +123,7 @@ func TestTestAgentConnectionCodexOfficialModeChecksRuntime(t *testing.T) {
 func TestTestAgentConnectionCodexOfficialModeAcceptsConfiguredRuntime(t *testing.T) {
 	clearAgentConnectionEnv(t)
 
-	codexPath := writeExecutable(t, "codex")
+	codexPath := writeCodexExecutable(t)
 	msg, err := (&App{}).TestAgentConnection(agentmgr.AgentConfig{
 		Provider:  "codex",
 		CodexPath: codexPath,
@@ -259,4 +260,13 @@ func writeExecutable(t *testing.T, name string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func writeCodexExecutable(t *testing.T) string {
+	t.Helper()
+	name := "codex"
+	if runtime.GOOS == "windows" {
+		name = "codex.exe"
+	}
+	return writeExecutable(t, name)
 }

@@ -176,14 +176,14 @@ func (m *Manager) Start(config AgentConfig) error {
 			env = ensureCodexVendorPath(env, codexPath)
 			env = appendEnv(env, "KUBETRAIL_AGENT_PATH_TO_CODEX", codexPath)
 		}
-		m.cmd = exec.CommandContext(ctx, nodePath, bundlePath, "pipe")
+		m.cmd = agentCommandContext(ctx, nodePath, bundlePath, "pipe")
 	} else if agentDir := findAgentDir(m.rootDir); agentDir != "" {
 		npxPath, err := resolveNpxForEnv(env)
 		if err != nil {
 			cancel()
 			return fmt.Errorf("找不到 npx: %w", err)
 		}
-		m.cmd = exec.CommandContext(ctx, npxPath, "tsx", "src/cli.ts", "pipe")
+		m.cmd = agentCommandContext(ctx, npxPath, "tsx", "src/cli.ts", "pipe")
 		m.cmd.Dir = agentDir
 	} else {
 		cancel()
@@ -1108,10 +1108,11 @@ func ResolveRuntimeInfo(config AgentConfig) AgentRuntimeInfo {
 func resolveCodexForEnv(env []string) (string, string, error) {
 	if explicit := strings.TrimSpace(envValueFromList(env, "KUBETRAIL_AGENT_PATH_TO_CODEX")); explicit != "" {
 		path := resolveConfiguredExecutablePathForEnv(explicit, env)
-		if isExecutableFile(path) {
-			return path, "configured", nil
+		resolved, source, err := resolveCodexSpawnPath(path, "configured")
+		if err == nil {
+			return resolved, source, nil
 		}
-		return "", "configured", fmt.Errorf("Codex CLI 路径不可执行或不存在: %s", path)
+		return "", "configured", err
 	}
 	if path, source, err := findCodexExecutableForEnv(env); err == nil {
 		return path, source, nil
@@ -1123,36 +1124,168 @@ func resolveCodexForEnv(env []string) (string, string, error) {
 }
 
 func findCodexExecutableForEnv(env []string) (string, string, error) {
+	var lastErr error
 	for _, name := range codexExecutableNames() {
 		if p, ok := lookPathInEnv(name, env); ok {
-			return normalizeExecutablePath(p), "PATH", nil
+			path, source, err := resolveCodexSpawnPath(p, "PATH")
+			if err == nil {
+				return path, source, nil
+			}
+			lastErr = err
 		}
 	}
-	return findCodexExecutable()
+	path, source, err := findCodexExecutable()
+	if err == nil {
+		return path, source, nil
+	}
+	if lastErr != nil {
+		return "", "", lastErr
+	}
+	return "", "", err
 }
 
 func findCodexExecutable() (string, string, error) {
+	var lastErr error
 	for _, name := range codexExecutableNames() {
 		if p, err := exec.LookPath(name); err == nil {
-			return normalizeExecutablePath(p), "PATH", nil
+			path, source, err := resolveCodexSpawnPath(p, "PATH")
+			if err == nil {
+				return path, source, nil
+			}
+			lastErr = err
 		}
 	}
 	for _, shell := range []string{"/bin/zsh", "/bin/bash", "/bin/sh"} {
 		out, err := exec.Command(shell, "-l", "-c", "command -v codex").Output()
 		if err == nil {
 			p := strings.TrimSpace(string(out))
-			if p != "" && isExecutableFile(p) {
-				return normalizeExecutablePath(p), filepath.Base(shell) + " login shell", nil
+			if p != "" {
+				path, source, err := resolveCodexSpawnPath(p, filepath.Base(shell)+" login shell")
+				if err == nil {
+					return path, source, nil
+				}
+				lastErr = err
 			}
 		}
 	}
 	for _, candidate := range codexCommonCandidates() {
 		path := normalizeExecutablePath(candidate)
+		resolved, source, err := resolveCodexSpawnPath(path, "common path")
+		if err == nil {
+			return resolved, source, nil
+		}
 		if isExecutableFile(path) {
-			return path, "common path", nil
+			lastErr = err
 		}
 	}
+	if lastErr != nil {
+		return "", "", lastErr
+	}
 	return "", "", fmt.Errorf("找不到 Codex CLI")
+}
+
+func resolveCodexSpawnPath(path, source string) (string, string, error) {
+	path = normalizeExecutablePath(path)
+	if !isExecutableFile(path) {
+		return "", source, fmt.Errorf("Codex CLI path does not exist or is not executable: %s", path)
+	}
+	if runtime.GOOS != "windows" {
+		return path, source, nil
+	}
+	if isWindowsDirectSpawnExecutable(path) {
+		return path, source, nil
+	}
+	if nativePath, ok := findWindowsCodexNativeExecutable(path); ok {
+		return nativePath, source + " npm native", nil
+	}
+	return "", source, fmt.Errorf("Codex CLI path points to a Windows shim that cannot be spawned directly: %s; install the official codex package with native optional dependencies or configure the native codex.exe path", path)
+}
+
+func isWindowsDirectSpawnExecutable(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	return ext == ".exe" || ext == ".com"
+}
+
+func findWindowsCodexNativeExecutable(path string) (string, bool) {
+	if runtime.GOOS != "windows" {
+		return "", false
+	}
+	triple, platformPackage := windowsCodexTarget()
+	if triple == "" || platformPackage == "" {
+		return "", false
+	}
+	var candidates []string
+	add := func(path string) {
+		path = normalizeExecutablePath(path)
+		if path != "" {
+			candidates = append(candidates, path)
+		}
+	}
+	addGlob := func(pattern string) {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			return
+		}
+		sort.Strings(matches)
+		for _, match := range matches {
+			add(match)
+		}
+	}
+	addFromPackageRoot := func(root string) {
+		root = normalizeExecutablePath(root)
+		if root == "" {
+			return
+		}
+		add(filepath.Join(root, "node_modules", "@openai", platformPackage, "vendor", triple, "bin", "codex.exe"))
+		add(filepath.Join(filepath.Dir(root), platformPackage, "vendor", triple, "bin", "codex.exe"))
+		addGlob(filepath.Join(root, "node_modules", "@openai", "codex-win32-*", "vendor", "*", "bin", "codex.exe"))
+	}
+
+	npmRoot := filepath.Dir(path)
+	addFromPackageRoot(filepath.Join(npmRoot, "node_modules", "@openai", "codex"))
+	add(filepath.Join(npmRoot, "node_modules", "@openai", platformPackage, "vendor", triple, "bin", "codex.exe"))
+	addGlob(filepath.Join(npmRoot, "node_modules", "@openai", ".codex-*", "node_modules", "@openai", platformPackage, "vendor", triple, "bin", "codex.exe"))
+	if packageRoot := findOpenAICodexPackageRoot(path); packageRoot != "" {
+		addFromPackageRoot(packageRoot)
+	}
+
+	seen := map[string]bool{}
+	for _, candidate := range candidates {
+		key := strings.ToLower(normalizeExecutablePath(candidate))
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if isExecutableFile(candidate) {
+			return normalizeExecutablePath(candidate), true
+		}
+	}
+	return "", false
+}
+
+func windowsCodexTarget() (string, string) {
+	switch runtime.GOARCH {
+	case "amd64":
+		return "x86_64-pc-windows-msvc", "codex-win32-x64"
+	case "arm64":
+		return "aarch64-pc-windows-msvc", "codex-win32-arm64"
+	default:
+		return "", ""
+	}
+}
+
+func findOpenAICodexPackageRoot(path string) string {
+	dir := normalizeExecutablePath(filepath.Dir(path))
+	for {
+		if strings.EqualFold(filepath.Base(dir), "codex") && strings.EqualFold(filepath.Base(filepath.Dir(dir)), "@openai") {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
 }
 
 func codexExecutableNames() []string {
@@ -1277,7 +1410,7 @@ func appendPathDir(env []string, dir string) []string {
 		}
 	}
 	for _, part := range parts {
-		if normalizeExecutablePath(part) == dir {
+		if samePathString(normalizeExecutablePath(part), dir) {
 			return env
 		}
 	}
@@ -1472,6 +1605,7 @@ func executableNameCandidates(name string, env []string) []string {
 		if !strings.HasPrefix(ext, ".") {
 			ext = "." + ext
 		}
+		ext = strings.ToLower(ext)
 		candidates = append(candidates, name+ext)
 	}
 	return append([]string{name}, candidates...)
@@ -1610,34 +1744,55 @@ func ensureNodeInPath(env []string) []string {
 		return env
 	}
 	nodeDir := filepath.Dir(nodePath)
-	for i, e := range env {
-		if strings.HasPrefix(e, "PATH=") {
-			if !strings.Contains(e, nodeDir) {
-				env[i] = e + ":" + nodeDir
+	pathValue := envValueFromList(env, "PATH")
+	var parts []string
+	if strings.TrimSpace(pathValue) != "" {
+		for _, part := range filepath.SplitList(pathValue) {
+			if part != "" {
+				parts = append(parts, part)
 			}
+		}
+	}
+	for _, part := range parts {
+		if samePathString(normalizeExecutablePath(part), normalizeExecutablePath(nodeDir)) {
 			return env
 		}
 	}
-	return append(env, "PATH=/usr/bin:/bin:"+nodeDir)
+	parts = append(parts, nodeDir)
+	return appendEnv(env, "PATH", strings.Join(parts, string(os.PathListSeparator)))
 }
 
 func appendEnv(env []string, key, value string) []string {
-	prefix := key + "="
 	for i, e := range env {
-		if strings.HasPrefix(e, prefix) {
-			env[i] = prefix + value
+		existingKey, _, ok := splitEnvItem(e)
+		if ok && envKeyEqual(existingKey, key) {
+			env[i] = existingKey + "=" + value
 			return env
 		}
 	}
-	return append(env, prefix+value)
+	return append(env, key+"="+value)
 }
 
 func envValueFromList(env []string, key string) string {
-	prefix := key + "="
 	for _, item := range env {
-		if strings.HasPrefix(item, prefix) {
-			return item[len(prefix):]
+		existingKey, value, ok := splitEnvItem(item)
+		if ok && envKeyEqual(existingKey, key) {
+			return value
 		}
 	}
 	return ""
+}
+
+func envKeyEqual(left, right string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
+}
+
+func samePathString(left, right string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
 }
